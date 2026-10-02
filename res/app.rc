@@ -1,0 +1,33 @@
+#include <windows.h>
+#include "version.h"
+
+1 ICON "app.ico"
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION VX_VERSION_NUM
+ PRODUCTVERSION VX_VERSION_NUM
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", VX_APP_NAME
+            VALUE "FileDescription", VX_APP_DESC
+            VALUE "FileVersion", VX_VERSION_STR
+            VALUE "InternalName", VX_APP_NAME
+            VALUE "OriginalFilename", "Voxual.exe"
+            VALUE "ProductName", VX_APP_NAME
+            VALUE "ProductVersion", VX_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

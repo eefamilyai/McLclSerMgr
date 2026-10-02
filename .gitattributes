@@ -1,0 +1,9 @@
+# keep binary assets untouched by line-ending normalisation
+*.png binary
+*.ico binary
+*.jpg binary
+*.gif binary
+*.exe binary
+*.dll binary
+*.obj binary
+*.lib binary

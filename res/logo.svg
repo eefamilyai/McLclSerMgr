@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#153A2E"/>
+      <stop offset="1" stop-color="#06110D"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="262" r="266" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D399" stop-opacity="0.30"/>
+      <stop offset="0.65" stop-color="#34D399" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#34D399" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C4FFE6"/>
+      <stop offset="1" stop-color="#6FEFBC"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#2AB985"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="476" height="476" rx="115" fill="url(#bg)"/>
+  <rect x="18" y="18" width="476" height="476" rx="115" fill="url(#glow)"/>
+  <rect x="19" y="19" width="474" height="474" rx="114" fill="none" stroke="#3FA67F" stroke-opacity="0.45" stroke-width="2"/>
+  <polygon points="256,116 382,189 256,262 130,189" fill="url(#top)"/>
+  <polygon points="130,189 256,262 256,408 130,335" fill="url(#left)"/>
+  <polygon points="256,262 382,189 382,335 256,408" fill="#168A62"/>
+</svg>
