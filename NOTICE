@@ -1,0 +1,36 @@
+Voxual (McLclSerMgr - Minecraft Local Server Manager)
+Copyright 2026 eefamilyai
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this product except in compliance with the License. You may obtain a copy of the
+License in the LICENSE file or at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+Third-party components bundled in this repository
+
+Dear ImGui - https://github.com/ocornut/imgui
+  MIT License, Copyright (c) 2014-2026 Omar Cornut
+  Files: third_party/imgui/*  (licence text: third_party/imgui/LICENSE.txt)
+  Includes stb_textedit.h, stb_rectpack.h and stb_truetype.h by Sean Barrett
+  and contributors, released under the MIT License / public domain.
+
+JSON for Modern C++ (nlohmann/json) - https://github.com/nlohmann/json
+  MIT License, Copyright (c) 2013-2023 Niels Lohmann
+  File: third_party/nlohmann/json.hpp
+
+--------------------------------------------------------------------------------
+Trademarks
+
+Minecraft is a trademark of Mojang Synergies AB. This project is not affiliated
+with, endorsed by or sponsored by Mojang Studios or Microsoft. Minecraft server
+software downloaded by this application is obtained from Mojang, PaperMC,
+Purpur, FabricMC, MinecraftForge and NeoForge under their own terms; running a
+Minecraft server requires accepting the Minecraft End User Licence Agreement
+(https://aka.ms/MinecraftEULA).

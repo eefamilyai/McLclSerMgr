@@ -217,7 +217,10 @@ void App::drawServerCard(ServerInstance& s, ImVec2 size) {
     ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + size.x, p.y + size.y);
     ImGui::SetNextItemAllowOverlap();
     bool clicked = ImGui::InvisibleButton("##card", size);
-    bool hov = ImGui::IsItemHovered() && !ImGui::IsAnyItemActive();
+    // The card itself owns the pointer: buttons drawn later still win their own clicks
+    // (AllowOverlap), while the body stays hoverable, clickable and right-clickable.
+    bool cardHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    bool hov = cardHovered && !ImGui::IsAnyItemActive();
     float hv = Anim(ImGui::GetItemID() ^ 0xcafe, hov ? 1.f : 0.f, 14.f);
     if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
@@ -318,9 +321,8 @@ void App::drawServerCard(ServerInstance& s, ImVec2 size) {
     else if (clicked) openServer(&s);
 
     // context menu
-    ImGui::SetCursorScreenPos(p);
-    ImGui::InvisibleButton("##ctxarea", size, ImGuiButtonFlags_MouseButtonRight);
-    if (ImGui::BeginPopupContextItem("##ctx")) {
+    if (cardHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("##ctx");
+    if (BeginCardMenu("##ctx")) {
         Label(s.cfg.name.c_str(), 14.f, col::text, true);
         (Label((std::string(info.name) + " " + s.cfg.mcVersion).c_str(), 12.f, col::mute));
         ImGui::Separator();
@@ -359,7 +361,8 @@ void App::drawServerRow(ServerInstance& s) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::SetNextItemAllowOverlap();
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h));
-    bool hov = ImGui::IsItemHovered() && !ImGui::IsAnyItemActive();
+    bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    bool hov = rowHovered && !ImGui::IsAnyItemActive();
     float hv = Anim(ImGui::GetItemID() ^ 0x77aa, hov ? 1.f : 0.f, 16.f);
     if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImVec2 q(p.x + w, p.y + h);
@@ -414,9 +417,8 @@ void App::drawServerRow(ServerInstance& s) {
     }
     if (clicked) openServer(&s);
 
-    ImGui::SetCursorScreenPos(p);
-    ImGui::InvisibleButton("##rowctx", ImVec2(w, h), ImGuiButtonFlags_MouseButtonRight);
-    if (ImGui::BeginPopupContextItem("##rowmenu")) {
+    if (rowHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("##rowmenu");
+    if (BeginCardMenu("##rowmenu")) {
         if (ImGui::MenuItem("Open")) openServer(&s);
         if (s.isActive()) {
             if (ImGui::MenuItem("Stop")) s.stop();

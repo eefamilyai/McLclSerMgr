@@ -10,7 +10,9 @@ No accounts, no telemetry, no launcher. One `Voxual.exe` (~1.9 MB, no runtime de
 
 > Repository name: **McLclSerMgr** (Minecraft Local Server Manager). The app inside is **Voxual**.
 
-![Voxual server list](docs/screenshots/servers.png)
+![Voxual walkthrough: server list, console, per-server personalization, theme switch and command palette](docs/demo.gif)
+
+<sub>Six seconds: the server list, a live console, per-server personalization, switching the whole app to the Daylight theme, then the command palette.</sub>
 
 ---
 
@@ -28,6 +30,7 @@ No accounts, no telemetry, no launcher. One `Voxual.exe` (~1.9 MB, no runtime de
 - [Developer flags](#developer-flags)
 - [Repository layout](#repository-layout)
 - [Notes and credits](#notes-and-credits)
+- [License](#license)
 
 ---
 
@@ -136,6 +139,7 @@ Each server has a **Personalize** tab that writes to that server's own files.
 
 | | |
 | --- | --- |
+| ![Server cards](docs/screenshots/servers.png) <br> *Server cards with live status* | ![Compact list](docs/screenshots/servers-list.png) <br> *Compact list view* |
 | ![Console](docs/screenshots/console.png) <br> *Live console with filters and quick commands* | ![Overview](docs/screenshots/overview.png) <br> *Overview with stats, connect addresses and details* |
 | ![Config editor](docs/screenshots/files.png) <br> *Config editor with highlighting and validation* | ![Command palette](docs/screenshots/palette.png) <br> *Command palette (`Ctrl+K`)* |
 | ![New server](docs/screenshots/wizard.png) <br> *New-server wizard* | ![Import](docs/screenshots/import.png) <br> *Import an existing server folder* |
@@ -259,4 +263,29 @@ tools/make_icon.js   builds app.ico / logo.png
   [Minecraft EULA](https://aka.ms/MinecraftEULA).
 - **Not affiliated with Mojang Studios or Microsoft.** Minecraft is a trademark of Mojang Synergies AB.
 - Vendored third-party libraries: [Dear ImGui](https://github.com/ocornut/imgui) (MIT) and
-  [nlohmann/json](https://github.com/nlohmann/json) (MIT).
+  [nlohmann/json](https://github.com/nlohmann/json) (MIT). Their notices are recorded in
+  [NOTICE](NOTICE).
+
+---
+
+## License
+
+Copyright 2026 eefamilyai.
+
+Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE) for the full text,
+or <http://www.apache.org/licenses/LICENSE-2.0>.
+
+You may use, modify and redistribute this project (including commercially) as long as you keep
+the copyright and licence notices, state significant changes, and include a copy of the licence.
+The licence also provides an express grant of patent rights from contributors.
+
+Bundled third-party components keep their own licences (both MIT, compatible with Apache 2.0) and
+are listed with their copyright holders in [NOTICE](NOTICE):
+
+| Component | Licence | Copyright |
+| --- | --- | --- |
+| [Dear ImGui](https://github.com/ocornut/imgui) (includes stb headers by Sean Barrett) | MIT | © 2014-2026 Omar Cornut |
+| [JSON for Modern C++](https://github.com/nlohmann/json) | MIT | © 2013-2023 Niels Lohmann |
+
+Minecraft is a trademark of Mojang Synergies AB; this project is not affiliated with Mojang
+Studios or Microsoft.

@@ -253,6 +253,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         if (n == "pagedown") return ImGuiKey_PageDown;
         if (n == "s") return ImGuiKey_S;
         if (n == "a") return ImGuiKey_A;
+        if (n == "k") return ImGuiKey_K;
+        if (n == "f") return ImGuiKey_F;
+        if (n == "escape") return ImGuiKey_Escape;
+        if (n == "space") return ImGuiKey_Space;
         return ImGuiKey_None;
     };
     bool done = false;
