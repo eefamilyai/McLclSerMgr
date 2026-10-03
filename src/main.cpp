@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "app.h"
+#include "crashlog.h"
 #include "imgui.h"
 #include "logo.h"
 #include "shot.h"
@@ -97,6 +98,7 @@ static LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DPICHANGED: {
         ui::g_scale = LOWORD(wp) / 96.f;
+        if (g_app) g_app->applyPersonalization();
         ui::SetupStyle();
         RECT* r = (RECT*)lp;
         SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -121,6 +123,8 @@ int runSelfTest(const std::string& spec, const std::string& logPath);
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     // command line (developer options)
     std::string shotPath, startPage, dumpTheme;
+    int stressFrames = 0;
+    bool crashTest = false;
     bool demo = false;
     int winW = 1360, winH = 860, shotFrames = 50;
     float scaleOverride = 0.f;
@@ -133,6 +137,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             if (a == "--shot" && i + 1 < argc) shotPath = util::narrow(argv[++i]);
             else if (a == "--page" && i + 1 < argc) startPage = util::narrow(argv[++i]);
             else if (a == "--dump-theme" && i + 1 < argc) dumpTheme = util::narrow(argv[++i]);
+            else if (a == "--stress-ui" && i + 1 < argc) stressFrames = _wtoi(argv[++i]);
+            else if (a == "--crash-test") crashTest = true;   // developer aid: verify crash reporting
             else if (a == "--demo") demo = true;
             else if (a == "--dump-icon" && i + 1 < argc) {  // build tooling: raw RGBA renders of the logo
                 std::string dir = util::narrow(argv[i + 1]);
@@ -193,6 +199,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     ImGui_ImplDX11_Init(g_dev, g_ctx);
     ui::LoadFonts();
 
+    crashlog::install();
+    crashlog::beginSession();
+    if (crashTest) {   // deliberately fault, to prove the report and the recovery path work
+        crashlog::breadcrumb("crash test requested");
+        int* p = nullptr;
+        *p = 42;
+    }
     App app;
     g_app = &app;
     app.init(hwnd);
@@ -221,7 +234,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (!startPage.empty()) app.gotoPage(startPage);
     else if (!app.settings().startPage.empty() && app.settings().startPage != "servers") app.gotoPage(app.settings().startPage);
 
-    // Developer test script: one command per line (click X Y | char TEXT | key NAME [ctrl] | wheel DY | wait N | shot NAME)
+    // Developer test script: one command per line
+    //   click X Y | press X Y | dragto X Y | release | move X Y | char TEXT | key NAME [ctrl] | wheel DY | wait N | shot NAME
     struct Cmd { std::string op, arg; float x = 0, y = 0; };
     std::vector<Cmd> script;
     size_t scriptIdx = 0;
@@ -236,7 +250,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             auto sp = line.find(' ');
             c.op = line.substr(0, sp);
             c.arg = sp == std::string::npos ? "" : line.substr(sp + 1);
-            if (c.op == "click" || c.op == "move") sscanf(c.arg.c_str(), "%f %f", &c.x, &c.y);
+            if (c.op == "click" || c.op == "move" || c.op == "press") sscanf(c.arg.c_str(), "%f %f", &c.x, &c.y);
             script.push_back(c);
         }
     }
@@ -259,6 +273,30 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         if (n == "space") return ImGuiKey_Space;
         return ImGuiKey_None;
     };
+    // --stress-ui N: mutate one personalization option every other frame, through the same
+    // path the UI uses. Used to shake out theme/font atlas bugs.
+    int stressLeft = stressFrames;
+    auto stressStep = [&](int step) {
+        Settings& s = g_app->settings();
+        const int round = step / 14;
+        switch (step % 14) {
+        case 0: s.theme = (s.theme + 1) % theme::PaletteCount(); break;
+        case 1: s.accent = (s.accent + 1) % theme::AccentCount(); break;
+        case 2: s.density = (s.density + 1) % 3; break;
+        case 3: s.textScale = 0.85f + 0.05f * (round % 11); break;
+        case 4: s.monoScale = 0.85f + 0.05f * (round % 13); break;
+        case 5: s.fontFamily = (s.fontFamily + 1) % theme::FontFamilyCount(); break;
+        case 6: s.monoFamily = (s.monoFamily + 1) % theme::MonoFamilyCount(); break;
+        case 7: s.radius = 0.4f + 0.1f * (round % 12); break;
+        case 8: s.bgStyle = (s.bgStyle + 1) % 5; break;
+        case 9: s.bgStrength = 0.2f + 0.1f * (round % 10); break;
+        case 10: s.animSpeed = (round % 2) ? 0.f : 1.f; break;
+        case 11: s.shadows = !s.shadows; break;
+        case 12: s.sidebarWidth = 210 + 10 * (round % 13); break;
+        default: s.cardSize = (s.cardSize + 1) % 3; break;
+        }
+        g_app->applyPersonalization();
+    };
     bool done = false;
     int frame = 0;
     const float clear[4] = {0.039f, 0.047f, 0.063f, 1.f};
@@ -270,7 +308,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             if (msg.message == WM_QUIT) done = true;
         }
         if (done) break;
-        if (g_swapOccluded && g_swap->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) { Sleep(40); continue; }
+        // Automated runs (--shot / --script) must finish even when the window is hidden behind
+        // another one: waiting for visibility here used to stall them indefinitely.
+        const bool automated = !shotPath.empty() || !script.empty();
+        if (!automated && g_swapOccluded && g_swap->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) { Sleep(40); continue; }
         g_swapOccluded = false;
         if (g_resizeW && g_resizeH) {
             releaseRtv();
@@ -278,6 +319,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             g_resizeW = g_resizeH = 0;
             createRtv();
         }
+        if (stressLeft > 0 && (frame % 2) == 0) {
+            stressStep(stressFrames - stressLeft);
+            --stressLeft;
+        }
+        app.prepareFrame();   // deferred theme/font changes, applied between frames
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         if (!script.empty()) {
@@ -286,7 +332,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             else if (scriptIdx < script.size()) {
                 Cmd& c = script[scriptIdx++];
                 scriptWait = 6;
-                if (c.op == "move") sio.AddMousePosEvent(c.x, c.y);
+                if (c.op == "move" || c.op == "dragto") sio.AddMousePosEvent(c.x, c.y);
+                else if (c.op == "press") {   // hold the left button (pair with dragto / release)
+                    sio.AddMousePosEvent(c.x, c.y);
+                    sio.AddMouseButtonEvent(0, true);
+                } else if (c.op == "release") sio.AddMouseButtonEvent(0, false);
                 else if (c.op == "click") {
                     sio.AddMousePosEvent(c.x, c.y);
                     sio.AddMouseButtonEvent(0, true);
@@ -330,9 +380,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             saveBackbufferPng(g_dev, g_ctx, g_swap, out.c_str());
             pendingShot.clear();
         }
-        if (!shotPath.empty() && script.empty() && frame == shotFrames) {
+        if (!shotPath.empty() && script.empty() && frame >= shotFrames) {
             bool ok = saveBackbufferPng(g_dev, g_ctx, g_swap, shotPath.c_str());
-            if (!ok) MessageBoxW(nullptr, L"Screenshot failed", L"Voxual", MB_OK);
+            if (!ok) util::appendTextFile(util::appDataDir() / "voxual.log", "screenshot failed: " + shotPath + "\r\n");
             break;
         }
         HRESULT hr = g_swap->Present(1, 0);
@@ -342,6 +392,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     }
 
     g_app->rememberWindowSize();
+    crashlog::endSession();
     g_app = nullptr;
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

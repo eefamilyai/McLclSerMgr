@@ -344,6 +344,15 @@ static void pngChunk(std::vector<uint8_t>& out, const char* type, const std::vec
     pngBe32(out, pngCrc(td.data(), td.size()));
 }
 
+bool appendTextFile(const fs::path& path, const std::string& text) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    std::ofstream f(path, std::ios::binary | std::ios::app);
+    if (!f) return false;
+    f.write(text.data(), (std::streamsize)text.size());
+    return (bool)f;
+}
+
 bool writePngRgb(const fs::path& path, const uint8_t* rgb, int w, int h) {
     std::vector<uint8_t> raw;
     raw.reserve((size_t)(w * 3 + 1) * h);

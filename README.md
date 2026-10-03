@@ -29,6 +29,7 @@ No accounts, no telemetry, no launcher. One `Voxual.exe` (~1.9 MB, no runtime de
 - [Building from source](#building-from-source)
 - [Developer flags](#developer-flags)
 - [Repository layout](#repository-layout)
+- [If something goes wrong](#if-something-goes-wrong)
 - [Notes and credits](#notes-and-credits)
 - [License](#license)
 
@@ -217,7 +218,9 @@ node tools/make_icon.js <path to Voxual.exe>
 | `--page servers\|wizard\|wizard2\|install\|detail0..7\|editor\|settings\|personalize\|about\|import\|palette\|quit` | Open a page directly |
 | `--shot file.png` | Render a frame to a PNG and exit |
 | `--scale 1.5`, `--size W H`, `--frames N` | Override DPI scale, window size and captured frame (with `--shot`) |
-| `--script file.txt` | Feed scripted input (`click X Y`, `char TEXT`, `key NAME`, `wheel DY`, `wait N`, `shot NAME`) for UI tests |
+| `--script file.txt` | Feed scripted input for UI tests: `click X Y`, `press X Y`, `dragto X Y`, `release`, `move X Y`, `char TEXT`, `key NAME [ctrl+]`, `wheel DY`, `wait N`, `shot NAME` |
+| `--stress-ui N` | Mutate one personalization option every other frame (themes, accents, fonts, density, rounding…) — shakes out appearance bugs |
+| `--crash-test` | Deliberately fault, to verify crash reporting and the recovery prompt |
 | `--dump-theme file.json` | Write the resolved theme (palette, accent, fonts, density, backdrop colour) and exit — handy for bug reports |
 | `--dump-icon <dir>` | Dump raw logo renders (used by the icon build tool) |
 | `--selftest paper:1.21.8 log.txt` | End-to-end check: install a real server, start it, run a command, back it up, stop it |
@@ -252,6 +255,20 @@ tools/make_icon.js   builds app.ico / logo.png
 ```
 
 ---
+
+## If something goes wrong
+
+Voxual keeps a breadcrumb trail of what it was doing and writes a report if it ever hits an
+unexpected error:
+
+- **`%APPDATA%\Voxual\crash-<date>.log`** — what happened, the exception and address, the last
+  steps the app took (page, theme and personalization values being applied), a stack trace and the
+  loaded modules. Attach the newest one when reporting a problem.
+- **Crash recovery** — if the previous run did not exit cleanly, the next start says so and offers
+  a one-click **Reset appearance** (servers, folders and Java runtimes are never touched), which
+  gets you out of a crash loop caused by an appearance setting.
+- **`sessions.crashed`** marker plus the session marker live in the same folder if you want to see
+  which run failed.
 
 ## Notes and credits
 

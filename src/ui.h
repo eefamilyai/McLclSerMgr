@@ -25,7 +25,10 @@ using theme::fRegular;
 
 void LoadFonts();                 // initial font atlas build (from stored settings)
 void SetupStyle();
-void ApplyTheme(const theme::Options& opt);   // switch palette/fonts/metrics at runtime
+void ApplyTheme(const theme::Options& opt);        // palette + metrics + fonts (between frames)
+void ApplyThemeStyle(const theme::Options& opt);   // palette + metrics only (safe anywhere)
+void ApplyThemeFonts(const theme::Options& opt);   // atlas only - between frames
+bool ThemeFontsPending();
 
 // ---- colours -----------------------------------------------------------------------
 constexpr ImU32 RGBA(unsigned hex, int a = 255) { return IM_COL32((hex >> 16) & 255, (hex >> 8) & 255, hex & 255, a); }
@@ -203,7 +206,8 @@ bool BeginScroll(const char* id, ImVec2 size);   // thin-scrollbar child, no bac
 void EndScroll();
 bool BeginModal(const char* id, float width);
 void EndModal();
-bool BeginCardMenu(const char* id);              // themed context menu
+bool BeginCardMenu(const char* id);              // themed context menu (pair with EndCardMenu)
+void EndCardMenu();
 
 // ---- toasts -----------------------------------------------------------------------
 enum class ToastKind { Info, Success, Warning, Error };

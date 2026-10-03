@@ -105,7 +105,10 @@ int MonoFamilyCount();
 const char* MonoFamilyName(int i);
 bool MonoFamilyInstalled(int i);
 
-void LoadFonts(const Options& opt);   // (re)build the font atlas
+void LoadFonts(const Options& opt);   // (re)build the font atlas - between frames only
+void ApplyStyle(const Options& opt);  // palette + metrics, safe to call inside a frame
+bool FontsPending();                  // true when a rebuild was deferred out of a frame
+unsigned FontKey(const Options& opt); // what the atlas depends on
 void SetupStyle();                    // (re)apply style from the active theme
 void Apply(const Options& opt);       // full theme switch: palette + fonts + style
 

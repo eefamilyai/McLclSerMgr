@@ -213,7 +213,33 @@ bool MonoFamilyInstalled(int i) {
     return !resolve(kMonoFamilies[k].regular).empty();
 }
 
+// Cheap key of everything that affects the atlas, so unrelated settings changes
+// (colours, density, radius, background...) never touch the fonts.
+unsigned FontKey(const Options& opt) {
+    auto q = [](float v) { return (unsigned)(v * 1000.f + 0.5f); };
+    return (unsigned)opt.fontFamily * 2654435761u ^ (unsigned)opt.monoFamily * 40503u ^ q(opt.textScale) * 2246822519u ^
+           q(opt.monoScale) * 3266489917u ^ q(g_scale) * 668265263u;
+}
+
+static bool g_fontsPending = false;   // set when a rebuild had to be deferred out of a frame
+
+bool FontsPending() { return g_fontsPending; }
+
 void LoadFonts(const Options& opt) {
+    static unsigned builtKey = 0;
+    static bool built = false;
+    // ImFontAtlas::Clear() is documented as "Don't call mid-frame!" - refuse to touch the
+    // atlas inside a frame and let the caller retry from between frames instead.
+    ImGuiContext* ctx = ImGui::GetCurrentContext();
+    if (ctx && ctx->WithinFrameScope) {
+        g_fontsPending = true;
+        return;
+    }
+    const unsigned key = FontKey(opt);
+    if (built && key == builtKey) {
+        g_fontsPending = false;
+        return;
+    }
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
     ImFont* def = io.Fonts->AddFontDefault();
@@ -230,6 +256,9 @@ void LoadFonts(const Options& opt) {
                                                                      : "C:/Windows/Fonts/segmdl2.ttf";
     fIcon = addFont(icons, base, fRegular);
     io.Fonts->Build();
+    builtKey = key;
+    built = true;
+    g_fontsPending = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,14 +335,19 @@ void SetupStyle() {
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(p.light ? 0.35f : 0.02f, p.light ? 0.38f : 0.03f, p.light ? 0.45f : 0.05f, p.light ? 0.45f : 0.72f);
 }
 
-void Apply(const Options& opt) {
+// Palette, accents and metrics. Touches no atlas state, so it is safe from anywhere.
+void ApplyStyle(const Options& opt) {
     g_opt = opt;
     SetPalette(opt.palette);
     SetAccent(opt.accent, opt.customAccent, opt.customAccentRgb);
     // Colour-coded surfaces (accents on dark/light) keep enough contrast to stay readable.
     g_pal.onAccent = readable(AccentRgb(), g_pal.panel);
-    LoadFonts(opt);
     SetupStyle();
+}
+
+void Apply(const Options& opt) {
+    ApplyStyle(opt);
+    LoadFonts(g_opt);   // no-op unless the font family or size actually changed
 }
 
 // ---------------------------------------------------------------------------

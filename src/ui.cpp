@@ -60,6 +60,9 @@ unsigned &codeSec = theme::g_pal.codeSec;
 void LoadFonts() { theme::LoadFonts(theme::g_opt); }
 void SetupStyle() { theme::SetupStyle(); }
 void ApplyTheme(const theme::Options &opt) { theme::Apply(opt); }
+void ApplyThemeStyle(const theme::Options &opt) { theme::ApplyStyle(opt); }
+void ApplyThemeFonts(const theme::Options &opt) { theme::LoadFonts(opt); }
+bool ThemeFontsPending() { return theme::FontsPending(); }
 
 static float clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 
@@ -818,6 +821,13 @@ bool BeginCardMenu(const char *id) {
         return false;
     }
     return true;
+}
+
+// Always pair with BeginCardMenu: the pushes above must be undone whether or not the popup opened.
+void EndCardMenu() {
+    ImGui::EndPopup();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 }
 
 // ---------------------------------------------------------------------------

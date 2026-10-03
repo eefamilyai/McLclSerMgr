@@ -10,6 +10,7 @@
 
 #include "imgui_internal.h"
 #include "java.h"
+#include "crashlog.h"
 #include "version.h"
 
 using namespace ui;
@@ -62,10 +63,24 @@ void App::init(void* hwnd) {
     rootDraft_ = settings_.serversRoot;
     resetWizard();
     buildCommands();
+    crashlog::breadcrumb("app ready: theme=" + std::to_string(settings_.theme) + " accent=" + std::to_string(settings_.accent) +
+                         (settings_.customAccent ? " (custom)" : "") + " font=" + std::to_string(settings_.fontFamily) +
+                         " density=" + std::to_string(settings_.density) + " text=" + std::to_string(settings_.textScale));
+    if (crashlog::previousSessionCrashed()) {
+        recoveryOpen_ = true;
+        crashlog::breadcrumb("previous session did not exit cleanly");
+    }
 }
 
 void App::applyPersonalization(bool immediate) {
-    if (!immediate) {          // fonts can only be rebuilt safely between frames
+    crashlog::breadcrumb(std::string("apply: ") + (immediate ? "startup" : "deferred") + " theme=" + std::to_string(settings_.theme) +
+                         " accent=" + std::to_string(settings_.accent) + (settings_.customAccent ? " custom" : "") +
+                         " font=" + std::to_string(settings_.fontFamily) + "/" + std::to_string(settings_.monoFamily) +
+                         " text=" + std::to_string(settings_.textScale) + " mono=" + std::to_string(settings_.monoScale) +
+                         " density=" + std::to_string(settings_.density) + " radius=" + std::to_string(settings_.radius));
+    if (!immediate) {
+        // Deferred: ImFontAtlas may only be modified between frames, so the whole
+        // apply runs from prepareFrame() instead of from inside the frame.
         pendingTheme_ = true;
         return;
     }
@@ -256,13 +271,24 @@ void App::tickServers() {
     }
 }
 
-void App::frame() {
-    if (pendingTheme_) {       // applied here so no font is in use while the atlas is rebuilt
+// Called by the host between ImGui frames (after Present, before NewFrame), which is the only
+// safe window for ImFontAtlas changes. Colours and metrics are applied immediately; atlas work
+// waits until the value stops changing, so dragging a size slider rebuilds fonts once.
+void App::prepareFrame() {
+    if (pendingTheme_) {
         pendingTheme_ = false;
-        ui::ApplyTheme(settings_.themeOptions());
+        ui::ApplyThemeStyle(settings_.themeOptions());
         SetToastPlacement(settings_.toastCorner, settings_.toastSeconds);
         applyWindowChrome((HWND)hwnd_, theme::g_pal);
+        fontSettle_ = 12;   // ~0.2 s of quiet before touching the font atlas
+    } else if (fontSettle_ > 0 && --fontSettle_ == 0) {
+        ui::ApplyThemeFonts(settings_.themeOptions());
+    } else if (ui::ThemeFontsPending()) {
+        ui::ApplyThemeFonts(settings_.themeOptions());   // something asked mid-frame: retry here
     }
+}
+
+void App::frame() {
     tickServers();
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
         paletteOpen_ = true;
@@ -810,7 +836,33 @@ void App::drawModals() {
     if (deleteOpen_) { ImGui::OpenPopup("##delete"); deleteOpen_ = false; }
     if (quitAsk_) { ImGui::OpenPopup("##quit"); quitAsk_ = false; }
 
+    if (recoveryOpen_) { ImGui::OpenPopup("##recovery"); recoveryOpen_ = false; }
     ImGui::PushFont(fRegular, FS(15));
+    if (BeginModal("##recovery", 520)) {
+        Heading(VX_APP_NAME " closed unexpectedly last time", 20);
+        Gap(8);
+        std::string log = crashlog::lastCrashLogPath();
+        LabelWrapped(log.empty() ? "A crash report was written next to your settings, in %APPDATA%\\Voxual."
+                                 : ("A crash report was written to:  " + log).c_str(),
+                     13.5f, col::dim);
+        Gap(6);
+        LabelWrapped("If it happened while changing the appearance, resetting those options usually clears it. "
+                     "Your servers, folders and Java runtimes are never touched.",
+                     13.5f, col::dim);
+        Gap(22);
+        float b1 = ButtonWidth("Reset appearance", true), b2 = ButtonWidth("Keep settings", false),
+              b3 = ButtonWidth("Open log folder", true);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, ImGui::GetContentRegionAvail().x - b1 - b2 - b3 - S(16)));
+        if (Button("Open log folder", icon::FolderOpen, Btn::Ghost, ImVec2(0, HS(40)))) util::openPath(util::appDataDir());
+        ImGui::SameLine(0, S(8));
+        if (Button("Keep settings", nullptr, Btn::Secondary, ImVec2(0, HS(40)))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine(0, S(8));
+        if (Button("Reset appearance", icon::Restart, Btn::Primary, ImVec2(0, HS(40)))) {
+            resetPersonalization();
+            ImGui::CloseCurrentPopup();
+        }
+        EndModal();
+    }
     if (BeginModal("##confirm", 460)) {
         Heading(confirm_.title.c_str(), 20);
         Gap(8);

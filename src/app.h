@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "crashlog.h"
 #include "installer.h"
 #include "store.h"
 #include "ui.h"
@@ -119,6 +120,7 @@ public:
     void* hwnd() const { return hwnd_; }
     Settings& settings() { return settings_; }
     void applyPersonalization(bool immediate = false);
+    void prepareFrame();   // applies deferred theme changes between frames (font atlas work)
     void rememberWindowSize();
 
     // --- command line / testing helpers
@@ -219,6 +221,7 @@ private:
     std::map<std::string, State> lastState_;
     bool demo_ = false;
     bool pendingTheme_ = false;
+    int fontSettle_ = 0;    // frames to wait before rebuilding the font atlas
 
     Page page_ = Page::Servers;
     float pageT_ = 0.f;
@@ -231,6 +234,7 @@ private:
     bool deleteOpen_ = false, deleteFiles_ = false;
     ServerInstance* deleteTarget_ = nullptr;
     bool quitAsk_ = false, quitting_ = false, quitReady_ = false;
+    bool recoveryOpen_ = false;   // last run ended unexpectedly
     double quitStart_ = 0;
 
     // personalization page state

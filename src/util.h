@@ -53,6 +53,7 @@ bool pickSaveFile(void* ownerHwnd, const wchar_t* filter, const wchar_t* defExt,
 // --- images -------------------------------------------------------------------
 // Minimal 24-bit PNG writer (used for generated server icons).
 bool writePngRgb(const fs::path& path, const uint8_t* rgb, int w, int h);
+bool appendTextFile(const fs::path& path, const std::string& text);
 // Decode any Windows-supported image, scale it to 64x64 and save it as a PNG (server-icon.png).
 bool makeServerIcon(const fs::path& src, const fs::path& dst);
 

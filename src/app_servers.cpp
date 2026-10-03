@@ -130,7 +130,7 @@ void App::drawServersPage() {
                 persTab_ = 2;
                 navigate(Page::Personalize);
             }
-            ImGui::EndPopup();
+            EndCardMenu();
         }
         ImGui::SameLine(0, S(10));
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + S(1));
@@ -351,7 +351,7 @@ void App::drawServerCard(ServerInstance& s, ImVec2 size) {
             if (settings_.confirmDestructive) deleteOpen_ = true;
             else removeServer(&s, false);
         }
-        ImGui::EndPopup();
+        EndCardMenu();
     }
 }
 
@@ -438,7 +438,7 @@ void App::drawServerRow(ServerInstance& s) {
             if (settings_.confirmDestructive) deleteOpen_ = true;
             else removeServer(&s, false);
         }
-        ImGui::EndPopup();
+        EndCardMenu();
     }
 }
 
