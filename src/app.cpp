@@ -37,7 +37,15 @@ const char* stateTip(State s) {
 }
 
 App::App() = default;
-App::~App() = default;
+
+App::~App() {
+    // This runs before any member is destroyed and on every way out of the program, early returns
+    // included. The workers touch this app's state and the process-wide caches (Java runtimes,
+    // provider lists, the data folder), so one still running during static teardown terminates the
+    // process - which is exactly what the --dump-theme path used to do.
+    joinBackgroundWork();
+    java::waitForScan();
+}
 
 // Win32 caption/border colours follow the active theme (dark title bar in dark themes).
 static void applyWindowChrome(HWND hwnd, const theme::Palette& pal) {

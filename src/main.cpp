@@ -232,6 +232,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
                  theme::FontFamilyName(theme::g_opt.fontFamily), theme::MonoFamilyName(theme::g_opt.monoFamily), theme::g_opt.bgStyle,
                  theme::g_opt.bgStrength, theme::DebugBackdropTop());
         util::writeFile(util::fromUtf8(dumpTheme), buf);
+        // This is a clean exit, so leave the process in the same state a normal quit does:
+        // stop the workers, clear the session marker (otherwise the next launch reports this run
+        // as having crashed) and drop the back pointer to the app that is about to be destroyed.
+        app.joinBackgroundWork();
+        java::waitForScan();
+        crashlog::endSession();
+        g_app = nullptr;
         return 0;
     }
     if (!startPage.empty()) app.gotoPage(startPage);
