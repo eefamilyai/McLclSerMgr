@@ -24,3 +24,10 @@ cmake_install.cmake
 *.user
 Thumbs.db
 desktop.ini
+
+# code signing material - never commit keys or their passwords
+*.pfx
+*.p12
+*.pvk
+*.spc
+signing.local.json

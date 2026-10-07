@@ -197,6 +197,29 @@ build.bat
 Output: `dist\Voxual.exe` and `dist\VoxualSetup.exe` (the installer embeds the app).
 If `Voxual.exe` is running and locked, the new build is saved as `dist\Voxual-new.exe`.
 All dependencies (Dear ImGui, nlohmann/json) are vendored in `third_party/`.
+The build ends by printing the SHA256 of both artifacts, ready for the release notes.
+
+### Code signing (optional)
+
+A normal build is unsigned and unchanged; `build.bat` only signs when signing is configured,
+either through environment variables or a `signing.local.json` beside this README (gitignored):
+
+| Mode | Configuration |
+| --- | --- |
+| Certificate store | `VOXUAL_SIGN_THUMBPRINT`, or `VOXUAL_SIGN_SUBJECT` |
+| PFX file | `VOXUAL_SIGN_PFX` and `VOXUAL_SIGN_PFX_PASSWORD` |
+| Azure Trusted Signing | `VOXUAL_SIGN_AZURE=1`, `VOXUAL_SIGN_AZURE_DLIB`, `VOXUAL_SIGN_AZURE_METADATA` |
+
+`VOXUAL_SIGN_TIMESTAMP_URL` overrides the RFC 3161 timestamp server (default
+`http://timestamp.digicert.com`).
+
+The installer carries `Voxual.exe` as a resource, so the app has to be signed **before** the
+installer is linked: otherwise the copy that lands in Program Files is unsigned, and Windows treats
+the installed app exactly the way it treats the download. `build.bat` signs the app, rebuilds the
+installer around it, signs that, and then has `tools\sign.ps1 -VerifyEmbedded` prove the installer
+really carries the signed app. Any signing failure stops the build before `dist\` is touched.
+
+`tools\sign.ps1 -DryRun` prints the command it would run without signing anything.
 
 ### Logo and icon
 
