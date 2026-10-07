@@ -37,24 +37,34 @@ unsigned serverColor(const ServerInstance& s) {
 }
 
 std::vector<ServerInstance*> App::ordered() {
-    std::vector<ServerInstance*> out;
-    std::string needle = util::lower(util::trim(serverFilter_));
+    // Rebuilt every frame, so the search text and the sort key are prepared once per server
+    // rather than once per comparison (the old comparator lowercased two names per compare).
+    struct Row {
+        ServerInstance* s = nullptr;
+        std::string name;   // already folded
+    };
+    std::vector<Row> rows;
+    rows.reserve(servers_.size());
+    const std::string needle = util::lower(util::trim(serverFilter_));
     for (auto& s : servers_) {
         if (!needle.empty()) {
-            std::string hay = util::lower(s->cfg.name + " " + s->cfg.software + " " + s->cfg.mcVersion + " " + s->cfg.note);
-            if (!util::contains(hay, needle)) continue;
+            const std::string hay = s->cfg.name + " " + s->cfg.software + " " + s->cfg.mcVersion + " " + s->cfg.note;
+            if (!util::icontains(hay, needle)) continue;
         }
-        out.push_back(s.get());
+        rows.push_back({s.get(), util::lower(s->cfg.name)});
     }
-    std::stable_sort(out.begin(), out.end(), [&](ServerInstance* a, ServerInstance* b) {
-        if (a->cfg.pinned != b->cfg.pinned) return a->cfg.pinned;
+    std::stable_sort(rows.begin(), rows.end(), [&](const Row& a, const Row& b) {
+        if (a.s->cfg.pinned != b.s->cfg.pinned) return a.s->cfg.pinned;
         switch (settings_.sortMode) {
-        case 1: return statusRank(a->state) < statusRank(b->state);
-        case 2: return a->playerCount() > b->playerCount();
-        case 3: return a->cfg.lastStarted > b->cfg.lastStarted;
-        default: return util::lower(a->cfg.name) < util::lower(b->cfg.name);
+        case 1: return statusRank(a.s->state) < statusRank(b.s->state);
+        case 2: return a.s->playerCount() > b.s->playerCount();
+        case 3: return a.s->cfg.lastStarted > b.s->cfg.lastStarted;
+        default: return a.name < b.name;
         }
     });
+    std::vector<ServerInstance*> out;
+    out.reserve(rows.size());
+    for (auto& r : rows) out.push_back(r.s);
     return out;
 }
 
@@ -274,8 +284,9 @@ void App::drawServerCard(ServerInstance& s, ImVec2 size) {
         DrawIcon(dl, ImVec2(x + S(7), y + S(9)), ic, 14.f, c);
         DrawStr(dl, fRegular, 13.f, ImVec2(x + S(22), y + S(1)), RGBA(col::dim), text.c_str());
     };
-    snprintf(buf, sizeof buf, "%d / %d", s.playerCount(), s.maxPlayers);
-    bool anyPlayers = s.playerCount() > 0;
+    const int online = s.playerCount();
+    snprintf(buf, sizeof buf, "%d / %d", online, s.maxPlayers);
+    bool anyPlayers = online > 0;
     stat(p.x + pad, icon::People, buf, anyPlayers ? RGBA(col::violet) : RGBA(col::mute));
     float x2 = p.x + pad + S(104);
     snprintf(buf, sizeof buf, ":%d", s.configuredPort());

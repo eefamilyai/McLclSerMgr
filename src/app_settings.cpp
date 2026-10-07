@@ -69,7 +69,9 @@ void App::startJavaInstall(int major) {
         javaJob_.msg = "Starting...";
         javaJob_.err.clear();
     }
-    std::thread([this, major] {
+    // Tracked rather than detached: the worker touches this App's state, and on exit it used to
+    // keep running past the object graph it depends on.
+    spawnBackground([this, major] {
         std::string err;
         bool ok = java::installManaged(major,
                                        [this](float p, const std::string& m) {
@@ -84,7 +86,7 @@ void App::startJavaInstall(int major) {
         }
         javaJob_.active = false;
         if (ok) java::scan();
-    }).detach();
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +794,7 @@ void App::personalizeStorage() {
             ImGui::PopID();
             ImGui::SameLine(0, S(8));
         }
-        if (Button("Rescan", icon::Restart, Btn::Ghost)) std::thread([] { java::scan(); }).detach();
+        if (Button("Rescan", icon::Restart, Btn::Ghost)) java::scanAsync();
     }
     EndCard();
     Gap(14);
@@ -972,6 +974,8 @@ void App::importTheme() {
         settings_.bgStrength = j.value("bgStrength", settings_.bgStrength);
         settings_.fontFamily = j.value("fontFamily", settings_.fontFamily);
         settings_.monoFamily = j.value("monoFamily", settings_.monoFamily);
+        // A file from anywhere may carry any numbers: clamp before anything divides by them.
+        settings_.normalize();
         applyPersonalization();
         saveSettings();
         Toast("Theme loaded", ToastKind::Success);

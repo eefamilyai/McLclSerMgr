@@ -186,7 +186,8 @@ std::string lint(Kind k, const std::string& text, bool& ok) {
     ok = true;
     if (k == Kind::Json) {
         try {
-            (void)nlohmann::json::parse(text);
+            const nlohmann::json parsed = nlohmann::json::parse(text);   // [[nodiscard]]
+            (void)parsed;
             return "Valid JSON";
         } catch (const std::exception& e) {
             ok = false;
@@ -328,12 +329,13 @@ void App::scanConfigFiles(ServerInstance& s) {
             if (it->is_regular_file(ec) && okExt(it->path())) add(it->path(), group);
         }
     };
-    for (auto& e : fs::directory_iterator(root, ec))
-        if (e.is_regular_file(ec) && okExt(e.path())) {
-            std::string n = util::lower(util::pathStr(e.path().filename()));
-            if (n == "usercache.json") continue;
+    util::forEachDirEntry(root, [&](const fs::directory_entry& e, std::error_code& dec) {
+        if (e.is_regular_file(dec) && okExt(e.path())) {
+            const std::string n = util::lower(util::pathStr(e.path().filename()));
+            if (n == "usercache.json") return;
             add(e.path(), "Server");
         }
+    });
     walk(root / "config", "Config", 4);
     walk(root / "plugins", "Plugins", 3);
     walk(root / "defaultconfigs", "Default configs", 3);
@@ -458,11 +460,14 @@ void App::drawFilesTab(ServerInstance& s) {
     Gap(2);
     BeginScroll("##cfgscroll", ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, S(2)));
-    std::string needle = util::lower(ds_.cfgFilter), lastGroup;
+    const std::string needle = util::lower(util::trim(ds_.cfgFilter));
+    const ImVec2 clipMin = ImGui::GetWindowDrawList()->GetClipRectMin();
+    const ImVec2 clipMax = ImGui::GetWindowDrawList()->GetClipRectMax();
+    std::string lastGroup;
     int clicked = -1;
     for (int i = 0; i < (int)ds_.cfgFiles.size(); ++i) {
         auto& f = ds_.cfgFiles[i];
-        if (!needle.empty() && util::lower(f.rel).find(needle) == std::string::npos) continue;
+        if (!needle.empty() && !util::icontains(f.rel, needle)) continue;
         if (f.group != lastGroup) {
             lastGroup = f.group;
             Gap(8);
@@ -472,6 +477,13 @@ void App::drawFilesTab(ServerInstance& s) {
         ImGui::PushID(i);
         ImVec2 p = ImGui::GetCursorScreenPos();
         float w = ImGui::GetContentRegionAvail().x, h = S(44);
+        // A server can carry hundreds of plugin configs, and fitting the name and the folder of
+        // every one of them on every frame was the expensive part. Offscreen rows just take space.
+        if (p.y + h < clipMin.y || p.y > clipMax.y) {
+            ImGui::Dummy(ImVec2(w, h));
+            ImGui::PopID();
+            continue;
+        }
         bool pressed = ImGui::InvisibleButton("##f", ImVec2(w, h));
         bool hov = ImGui::IsItemHovered();
         if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -493,15 +505,11 @@ void App::drawFilesTab(ServerInstance& s) {
         std::string dir = util::pathStr(fs::path(util::fromUtf8(f.rel)).parent_path());
         std::replace(dir.begin(), dir.end(), '\\', '/');
         float tx = p.x + S(58), maxW = w - S(66);
-        auto fit = [&](std::string str, ImFont* font, float px, bool tail) {
-            while (TextSize(font, px, str.c_str()).x > maxW && str.size() > 6) str = tail ? "..." + str.substr(str.size() > 12 ? 4 : 2) : str.substr(0, str.size() - 2);
-            return str;
-        };
         if (dir.empty()) {
-            std::string nm = fit(name, fBold, 13.5f, false);
+            std::string nm = FitText(name, fBold, 13.5f, maxW, false);
             DrawStr(ld, fBold, 13.5f, ImVec2(tx, p.y + (h - TextSize(fBold, 13.5f, "A").y) * 0.5f), sel ? RGBA(col::text) : RGBA(col::dim), nm.c_str());
         } else {
-            std::string nm = fit(name, fBold, 13.5f, false), dr = fit(dir, fRegular, 11.5f, true);
+            std::string nm = FitText(name, fBold, 13.5f, maxW, false), dr = FitText(dir, fRegular, 11.5f, maxW, true);
             DrawStr(ld, fBold, 13.5f, ImVec2(tx, p.y + S(6)), sel ? RGBA(col::text) : RGBA(col::dim), nm.c_str());
             DrawStr(ld, fRegular, 11.5f, ImVec2(tx, p.y + S(24)), RGBA(col::mute), dr.c_str());
         }

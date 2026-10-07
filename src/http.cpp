@@ -4,6 +4,7 @@
 #include <winhttp.h>
 
 #include <fstream>
+#include <mutex>
 
 #include "util.h"
 
@@ -16,9 +17,25 @@ struct Conn {
     ~Conn() {
         if (request) WinHttpCloseHandle(request);
         if (connect) WinHttpCloseHandle(connect);
-        if (session) WinHttpCloseHandle(session);
+        // session is process-wide and shared, so it is deliberately not closed here
     }
 };
+
+// Opening a session per request re-resolved the proxy configuration every time, which cost
+// more than the small version-list requests themselves.
+HINTERNET sharedSession() {
+    static std::once_flag once;
+    static HINTERNET session = nullptr;
+    std::call_once(once, [] {
+        session = WinHttpOpen(L"Voxual/1.0 (Minecraft server manager)", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (session) {
+            DWORD decomp = WINHTTP_DECOMPRESSION_FLAG_ALL;
+            WinHttpSetOption(session, WINHTTP_OPTION_DECOMPRESSION, &decomp, sizeof decomp);
+        }
+    });
+    return session;
+}
 
 std::string winErr(const char* what) {
     return std::string(what) + " (error " + std::to_string(GetLastError()) + ")";
@@ -35,12 +52,8 @@ int openRequest(Conn& c, const std::string& url, int timeoutMs, std::string& err
     std::wstring path(uc.lpszUrlPath, uc.dwUrlPathLength);
     if (uc.dwExtraInfoLength) path.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
 
-    c.session = WinHttpOpen(L"Voxual/1.0 (Minecraft server manager)", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    c.session = sharedSession();
     if (!c.session) { err = winErr("WinHttpOpen failed"); return 0; }
-    WinHttpSetTimeouts(c.session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
-    DWORD decomp = WINHTTP_DECOMPRESSION_FLAG_ALL;
-    WinHttpSetOption(c.session, WINHTTP_OPTION_DECOMPRESSION, &decomp, sizeof decomp);
 
     c.connect = WinHttpConnect(c.session, host.c_str(), uc.nPort, 0);
     if (!c.connect) { err = winErr("Connect failed"); return 0; }
@@ -48,6 +61,7 @@ int openRequest(Conn& c, const std::string& url, int timeoutMs, std::string& err
     c.request = WinHttpOpenRequest(c.connect, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
                                    WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!c.request) { err = winErr("OpenRequest failed"); return 0; }
+    WinHttpSetTimeouts(c.request, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
     if (!WinHttpSendRequest(c.request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(c.request, nullptr)) {
         err = winErr("Request failed — check your internet connection");
@@ -113,6 +127,7 @@ bool download(const std::string& url, const std::filesystem::path& dest, const P
         DWORD read = 0;
         if (!WinHttpReadData(c.request, buf.data(), avail, &read)) { err = winErr("Download interrupted"); ok = false; break; }
         out.write(buf.data(), read);
+        if (!out) { err = "Could not write to " + util::pathStr(part) + " (disk full?)"; ok = false; break; }
         done += read;
         if (progress) progress(done, total);
     }

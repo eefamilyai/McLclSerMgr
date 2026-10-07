@@ -172,8 +172,10 @@ bool Button(const char* label, const char* icon = nullptr, Btn v = Btn::Secondar
 float ButtonWidth(const char* label, bool withIcon);
 bool IconButton(const char* id, const char* icon, Btn v = Btn::Ghost, float size = 34.f, const char* tip = nullptr);
 bool Toggle(const char* id, bool* v);
+// padX is the horizontal frame padding, so a caller that reserves room for a leading icon
+// (SearchBox) can keep the text clear of it.
 bool InputText(const char* id, std::string* s, const char* hint = nullptr, float width = -1, int flags = 0,
-               ImGuiInputTextCallback cb = nullptr, void* userData = nullptr);
+               ImGuiInputTextCallback cb = nullptr, void* userData = nullptr, float padX = 12.f);
 bool InputInt(const char* id, int* v, int lo, int hi, float width = 120);
 bool Combo(const char* id, int* cur, const char* const* items, int n, float width = -1);
 bool SliderInt(const char* id, int* v, int lo, int hi, const char* fmt = "%d", float width = -1);

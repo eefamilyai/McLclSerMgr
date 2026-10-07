@@ -4,8 +4,11 @@
 #include <shlobj.h>
 
 #include <algorithm>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <set>
+#include <thread>
 
 #include "http.h"
 #include "util.h"
@@ -15,7 +18,13 @@ namespace java {
 namespace {
 std::mutex g_mu;
 std::vector<Install> g_installs;
+std::mutex g_scanMu;                                   // serialises scanAsync() and waitForScan()
+std::thread g_scanThread;
+std::atomic<bool> g_asyncRunning{false};
+std::mutex g_managedMu;
 std::filesystem::path g_managed;
+std::mutex g_explicitMu;                               // memo for explicit java.exe paths
+std::map<std::string, Install> g_explicit;
 std::atomic<bool> g_scanning{false};
 
 int parseMajor(const std::string& v) {
@@ -62,23 +71,51 @@ void scanDirForJava(std::set<fs::path>& out, const fs::path& dir, int depth) {
     if (!fs::is_directory(dir, ec)) return;
     addCandidate(out, dir / "bin" / "java.exe");
     if (depth <= 0) return;
-    for (auto& e : fs::directory_iterator(dir, ec))
-        if (e.is_directory(ec)) scanDirForJava(out, e.path(), depth - 1);
+    util::forEachDirEntry(dir, [&](const fs::directory_entry& e, std::error_code& dec) {
+        if (e.is_directory(dec)) scanDirForJava(out, e.path(), depth - 1);
+    });
+}
+
+// GetEnvironmentVariableW reports the required size instead of failing when the buffer is too
+// small, so sizing a string from a fixed buffer's result read past the end of that buffer.
+std::wstring envValue(const wchar_t* name) {
+    DWORD n = GetEnvironmentVariableW(name, nullptr, 0);
+    if (n == 0) return {};
+    std::wstring buf(n, L'\0');
+    DWORD got = GetEnvironmentVariableW(name, buf.data(), n);
+    if (got == 0 || got >= n) return {};
+    buf.resize(got);
+    return buf;
 }
 
 fs::path envPath(const wchar_t* name) {
-    wchar_t buf[2048];
-    DWORD n = GetEnvironmentVariableW(name, buf, (DWORD)std::size(buf));
-    return n ? fs::path(std::wstring(buf, n)) : fs::path();
+    std::wstring v = envValue(name);
+    return v.empty() ? fs::path() : fs::path(v);
 }
 }  // namespace
 
-void setManagedRoot(const fs::path& root) { g_managed = root; }
-fs::path managedRoot() { return g_managed; }
+void setManagedRoot(const fs::path& root) {
+    std::lock_guard<std::mutex> lk(g_managedMu);
+    g_managed = root;
+}
+fs::path managedRoot() {
+    std::lock_guard<std::mutex> lk(g_managedMu);
+    return g_managed;
+}
 bool scanning() { return g_scanning; }
 
 void scan() {
     if (g_scanning.exchange(true)) return;
+    // The scan must clear the flag on every path out, including an exception while walking
+    // the filesystem, otherwise no later scan would ever run.
+    struct ScanGuard {
+        ~ScanGuard() { g_scanning = false; }
+    } scanGuard;
+    fs::path managed;
+    {
+        std::lock_guard<std::mutex> lk(g_managedMu);
+        managed = g_managed;
+    }
     std::set<fs::path> cands;
 
     if (auto jh = envPath(L"JAVA_HOME"); !jh.empty()) addCandidate(cands, jh / "bin" / "java.exe");
@@ -98,7 +135,7 @@ void scan() {
     if (!home.empty()) scanDirForJava(cands, home / ".jdks", 1);
     if (auto la = envPath(L"LOCALAPPDATA"); !la.empty()) scanDirForJava(cands, la / "Programs" / "Eclipse Adoptium", 1);
     if (auto ad = envPath(L"APPDATA"); !ad.empty()) scanDirForJava(cands, ad / ".minecraft" / "runtime", 3);
-    if (!g_managed.empty()) scanDirForJava(cands, g_managed, 3);
+    if (!managed.empty()) scanDirForJava(cands, managed, 3);
 
     std::vector<Install> found;
     for (auto& exe : cands) {
@@ -107,7 +144,10 @@ void scan() {
         if (!readVersion(exe, in.version)) continue;
         in.major = parseMajor(in.version);
         if (in.major <= 0) continue;
-        in.managed = !g_managed.empty() && exe.wstring().find(g_managed.wstring()) == 0;
+        // Path prefixes are not case-sensitive on Windows, so compare them folded.
+        std::string exeLower = util::lower(util::pathStr(exe));
+        std::string manLower = util::lower(util::pathStr(managed));
+        in.managed = !manLower.empty() && exeLower.rfind(manLower, 0) == 0;
         found.push_back(in);
     }
     std::sort(found.begin(), found.end(), [](const Install& a, const Install& b) { return a.major > b.major; });
@@ -115,7 +155,27 @@ void scan() {
         std::lock_guard<std::mutex> lk(g_mu);
         g_installs = std::move(found);
     }
-    g_scanning = false;
+}
+
+// Detached scans used to be the only way to scan from a button; those threads outlived the
+// app's statics. One tracked worker replaces them.
+void scanAsync() {
+    if (g_asyncRunning.exchange(true)) return;   // a background scan is already queued or running
+    std::lock_guard<std::mutex> lk(g_scanMu);
+    if (g_scanThread.joinable()) g_scanThread.join();   // reap the finished one
+    g_scanThread = std::thread([] {
+        scan();
+        g_asyncRunning = false;
+    });
+}
+
+void waitForScan() {
+    std::thread t;
+    {
+        std::lock_guard<std::mutex> lk(g_scanMu);
+        if (g_scanThread.joinable()) t = std::move(g_scanThread);
+    }
+    if (t.joinable()) t.join();
 }
 
 std::vector<Install> all() {
@@ -123,14 +183,32 @@ std::vector<Install> all() {
     return g_installs;
 }
 
+size_t count() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_installs.size();
+}
+
+int newestMajor() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_installs.empty() ? -1 : g_installs.front().major;
+}
+
 bool has(int major) {
-    for (auto& i : all())
+    std::lock_guard<std::mutex> lk(g_mu);   // no copy: called several times per frame by the UI
+    for (auto& i : g_installs)
         if (i.major == major) return true;
     return false;
 }
 
 std::optional<Install> pick(int major, const std::string& explicitPath) {
     if (!explicitPath.empty()) {
+        // A non-release java.exe has to be launched to learn its version, which is far too
+        // expensive to repeat every frame, so remember the answer per path.
+        {
+            std::lock_guard<std::mutex> lk(g_explicitMu);
+            auto it = g_explicit.find(explicitPath);
+            if (it != g_explicit.end()) return it->second;
+        }
         fs::path p = util::fromUtf8(explicitPath);
         std::error_code ec;
         if (fs::exists(p, ec)) {
@@ -138,16 +216,19 @@ std::optional<Install> pick(int major, const std::string& explicitPath) {
             in.exe = p;
             readVersion(p, in.version);
             in.major = parseMajor(in.version);
+            if (in.major <= 0) return std::nullopt;
+            std::lock_guard<std::mutex> lk(g_explicitMu);
+            g_explicit[explicitPath] = in;
             return in;
         }
     }
-    auto list = all();  // sorted newest first
-    if (list.empty()) return std::nullopt;
-    if (major <= 0) return list.front();
-    for (auto& i : list)
+    std::lock_guard<std::mutex> lk(g_mu);   // g_installs is sorted newest first
+    if (g_installs.empty()) return std::nullopt;
+    if (major <= 0) return g_installs.front();
+    for (auto& i : g_installs)
         if (i.major == major) return i;
     const Install* best = nullptr;  // smallest major greater than required
-    for (auto& i : list)
+    for (auto& i : g_installs)
         if (i.major > major && (!best || i.major < best->major)) best = &i;
     if (best) return *best;
     return std::nullopt;
@@ -155,11 +236,12 @@ std::optional<Install> pick(int major, const std::string& explicitPath) {
 
 bool installManaged(int major, const std::function<void(float, const std::string&)>& progress,
                     const std::atomic<bool>* cancel, std::string& err) {
-    if (g_managed.empty()) { err = "Runtime folder not configured"; return false; }
+    const fs::path managed = managedRoot();
+    if (managed.empty()) { err = "Runtime folder not configured"; return false; }
     std::string url = "https://api.adoptium.net/v3/binary/latest/" + std::to_string(major) +
                       "/ga/windows/x64/jre/hotspot/normal/eclipse";
-    fs::path zip = g_managed / ("java-" + std::to_string(major) + ".zip");
-    fs::path dest = g_managed / ("java-" + std::to_string(major));
+    fs::path zip = managed / ("java-" + std::to_string(major) + ".zip");
+    fs::path dest = managed / ("java-" + std::to_string(major));
     if (progress) progress(0.f, "Downloading Java " + std::to_string(major) + " (Temurin)");
     bool ok = http::download(url, zip, [&](uint64_t d, uint64_t t) {
         if (progress) progress(t ? (float)d / (float)t * 0.85f : -1.f,
@@ -179,6 +261,9 @@ bool installManaged(int major, const std::function<void(float, const std::string
     if (code != 0) { err = "Failed to extract the Java archive"; return false; }
     if (progress) progress(1.f, "Java " + std::to_string(major) + " ready");
     scan();
+    // scan() collapses into a scan that is already running, which may have started before this
+    // runtime was unpacked; ask again so the caller sees it.
+    if (!has(major)) scan();
     return true;
 }
 

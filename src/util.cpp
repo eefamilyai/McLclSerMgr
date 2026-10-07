@@ -10,11 +10,12 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <random>
-#include <sstream>
 
 namespace util {
 
@@ -64,6 +65,18 @@ bool startsWith(const std::string& s, const std::string& p) { return s.size() >=
 bool endsWith(const std::string& s, const std::string& p) { return s.size() >= p.size() && s.compare(s.size() - p.size(), p.size(), p) == 0; }
 bool contains(const std::string& s, const std::string& p) { return s.find(p) != std::string::npos; }
 
+bool icontains(const std::string& haystack, const std::string& needleLower) {
+    if (needleLower.empty()) return true;
+    if (haystack.size() < needleLower.size()) return false;
+    const size_t last = haystack.size() - needleLower.size();
+    for (size_t i = 0; i <= last; ++i) {
+        size_t j = 0;
+        while (j < needleLower.size() && (char)tolower((unsigned char)haystack[i + j]) == needleLower[j]) ++j;
+        if (j == needleLower.size()) return true;
+    }
+    return false;
+}
+
 std::string sanitizeFileName(const std::string& s) {
     std::string out;
     for (unsigned char c : s) {
@@ -73,6 +86,16 @@ std::string sanitizeFileName(const std::string& s) {
     out = trim(out);
     while (!out.empty() && (out.back() == '.' || out.back() == ' ')) out.pop_back();
     if (out.empty()) out = "server";
+    // Windows reserves these names in every directory, so a server called "con" could never
+    // be created. Suffix them instead of failing at create_directories().
+    static const char* kReserved[] = {"CON", "PRN", "AUX", "NUL",  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                                      "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+    std::string upper = out;
+    for (auto& c : upper) c = (char)toupper((unsigned char)c);
+    size_t dot = upper.find('.');
+    std::string stem = dot == std::string::npos ? upper : upper.substr(0, dot);
+    for (const char* r : kReserved)
+        if (stem == r) { out += "_"; break; }
     return out;
 }
 
@@ -115,15 +138,37 @@ fs::path defaultServersRoot() { return knownFolder(FOLDERID_Profile) / L"Voxual"
 bool readFile(const fs::path& p, std::string& out) {
     std::ifstream f(p, std::ios::binary);
     if (!f) return false;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    out = ss.str();
+    f.seekg(0, std::ios::end);
+    std::streamoff n = f.tellg();
+    if (n < 0) { out.clear(); return false; }
+    f.seekg(0, std::ios::beg);
+    out.resize((size_t)n);
+    if (n > 0 && !f.read(out.data(), n)) { out.clear(); return false; }
     return true;
 }
 
 bool writeFile(const fs::path& p, const std::string& data) {
     std::error_code ec;
     if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+    // Write beside the target and swap it in, so a failure part way through cannot leave a
+    // truncated settings.json or servers.json behind (which used to lose the whole list).
+    fs::path tmp = p;
+    tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (f) {
+            f.write(data.data(), (std::streamsize)data.size());
+            if (f) {
+                f.close();
+                std::error_code rec;
+                fs::rename(tmp, p, rec);
+                if (!rec) return true;
+                fs::remove(tmp, rec);
+            }
+        }
+    }
+    fs::remove(tmp, ec);
+    // Fall back to writing in place (a locked or redirected target).
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f.write(data.data(), (std::streamsize)data.size());
@@ -200,9 +245,13 @@ void setClipboard(const std::string& text) {
     std::wstring w = widen(text);
     HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (w.size() + 1) * sizeof(wchar_t));
     if (h) {
-        memcpy(GlobalLock(h), w.c_str(), (w.size() + 1) * sizeof(wchar_t));
-        GlobalUnlock(h);
-        SetClipboardData(CF_UNICODETEXT, h);
+        void* dst = GlobalLock(h);
+        if (dst) {
+            memcpy(dst, w.c_str(), (w.size() + 1) * sizeof(wchar_t));
+            GlobalUnlock(h);
+            if (SetClipboardData(CF_UNICODETEXT, h)) h = nullptr;  // the clipboard owns it now
+        }
+        if (h) GlobalFree(h);   // locking or handing over failed - do not leak the block
     }
     CloseClipboard();
 }
@@ -212,8 +261,7 @@ static void ensureWsa() {
     (void)done;
 }
 
-std::string localIPv4() {
-    ensureWsa();
+static std::string probeLocalIPv4() {
     std::string result = "127.0.0.1";
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s == INVALID_SOCKET) return result;
@@ -232,6 +280,22 @@ std::string localIPv4() {
     }
     closesocket(s);
     return result;
+}
+
+// The UI asks for this address several times per frame; probing the routing table that often
+// meant a socket plus a connect() on every frame. Keep the answer (and the probe) for a while.
+std::string localIPv4() {
+    ensureWsa();
+    static std::mutex mu;
+    static std::string cached;
+    static std::chrono::steady_clock::time_point taken{};
+    std::lock_guard<std::mutex> lk(mu);
+    auto now = std::chrono::steady_clock::now();
+    if (cached.empty() || now - taken > std::chrono::seconds(30)) {
+        cached = probeLocalIPv4();
+        taken = now;
+    }
+    return cached;
 }
 
 bool isPortInUse(int port) {
@@ -447,6 +511,25 @@ bool makeServerIcon(const fs::path& src, const fs::path& dst) {
     return ok;
 }
 
+// Split the buffered text into lines once per chunk instead of erase()-ing from the front of
+// the string for every line, which made a chatty installer quadratic in its output size.
+static void emitLines(std::string& partial, bool flush, const std::function<void(const std::string&)>& onLine) {
+    size_t start = 0;
+    for (;;) {
+        size_t pos = partial.find('\n', start);
+        if (pos == std::string::npos) break;
+        std::string line = partial.substr(start, pos - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (onLine) onLine(line);
+        start = pos + 1;
+    }
+    partial.erase(0, start);
+    if (flush && !partial.empty()) {
+        if (onLine) onLine(partial);
+        partial.clear();
+    }
+}
+
 int runCapture(const std::wstring& cmdline, const fs::path& cwd,
                const std::function<void(const std::string&)>& onLine, const std::atomic<bool>* cancel) {
     SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
@@ -476,13 +559,7 @@ int runCapture(const std::wstring& cmdline, const fs::path& cwd,
             DWORD n = 0;
             if (!ReadFile(rd, buf, std::min<DWORD>(avail, sizeof buf), &n, nullptr) || n == 0) break;
             partial.append(buf, n);
-            size_t pos;
-            while ((pos = partial.find('\n')) != std::string::npos) {
-                std::string line = partial.substr(0, pos);
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (onLine) onLine(line);
-                partial.erase(0, pos + 1);
-            }
+            emitLines(partial, false, onLine);
             continue;
         }
         if (cancel && cancel->load()) { TerminateProcess(pi.hProcess, 1); break; }
@@ -497,16 +574,7 @@ int runCapture(const std::wstring& cmdline, const fs::path& cwd,
             break;
         }
     }
-    if (!partial.empty()) {
-        size_t pos;
-        while ((pos = partial.find('\n')) != std::string::npos) {
-            std::string line = partial.substr(0, pos);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (onLine) onLine(line);
-            partial.erase(0, pos + 1);
-        }
-        if (!partial.empty() && onLine) onLine(partial);
-    }
+    if (!partial.empty()) emitLines(partial, true, onLine);
     WaitForSingleObject(pi.hProcess, 5000);
     DWORD code = (DWORD)-1;
     GetExitCodeProcess(pi.hProcess, &code);

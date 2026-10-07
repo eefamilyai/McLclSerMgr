@@ -20,7 +20,13 @@ std::filesystem::path managedRoot();
 
 // Blocking: scans common install locations + PATH. Thread-safe.
 void scan();
-std::vector<Install> all();
+// Runs scan() on a worker thread. Only one background scan exists at a time, so this is safe
+// to call from a button and leaves nothing detached behind at exit.
+void scanAsync();
+void waitForScan();           // joins the background scan; call before the process exits
+std::vector<Install> all();   // copies the list: prefer count()/newestMajor() on per-frame paths
+size_t count();
+int newestMajor();            // -1 when no runtime was found
 bool scanning();
 
 // explicitPath wins if non-empty. major == 0 -> newest installed. Otherwise exact match, then next higher.

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,10 @@ namespace theme {
 Palette g_pal;
 Options g_opt;
 float g_scale = 1.f;
+
+// A zero scale makes every size vanish and turns the backdrop's `x += step` loops into
+// infinite loops, so the value is only ever set through here.
+void SetScale(float scale) { g_scale = std::clamp(scale, 0.5f, 4.f); }
 ImFont *fRegular = nullptr, *fBold = nullptr, *fMono = nullptr, *fIcon = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -173,6 +178,11 @@ const MonoFamily kMonoFamilies[] = {
 };
 constexpr int kMonoCount = (int)(sizeof kMonoFamilies / sizeof kMonoFamilies[0]);
 
+// resolve() stats the filesystem, and the Personalize page asks about every family every frame.
+std::mutex g_fontMu;
+bool g_famKnown[kFamilyCount] = {}, g_famValue[kFamilyCount] = {};
+bool g_monoKnown[kMonoCount] = {}, g_monoValue[kMonoCount] = {};
+
 std::string resolve(const char* const paths[3]) {
     std::string user = userFontDir();
     for (int i = 0; i < 3; ++i) {
@@ -204,13 +214,23 @@ int FontFamilyCount() { return kFamilyCount; }
 const char* FontFamilyName(int i) { return kFamilies[std::clamp(i, 0, kFamilyCount - 1)].label; }
 bool FontFamilyInstalled(int i) {
     int k = std::clamp(i, 0, kFamilyCount - 1);
-    return !resolve(kFamilies[k].regular).empty();
+    std::lock_guard<std::mutex> lk(g_fontMu);
+    if (!g_famKnown[k]) {
+        g_famValue[k] = !resolve(kFamilies[k].regular).empty();
+        g_famKnown[k] = true;
+    }
+    return g_famValue[k];
 }
 int MonoFamilyCount() { return kMonoCount; }
 const char* MonoFamilyName(int i) { return kMonoFamilies[std::clamp(i, 0, kMonoCount - 1)].label; }
 bool MonoFamilyInstalled(int i) {
     int k = std::clamp(i, 0, kMonoCount - 1);
-    return !resolve(kMonoFamilies[k].regular).empty();
+    std::lock_guard<std::mutex> lk(g_fontMu);
+    if (!g_monoKnown[k]) {
+        g_monoValue[k] = !resolve(kMonoFamilies[k].regular).empty();
+        g_monoKnown[k] = true;
+    }
+    return g_monoValue[k];
 }
 
 // Cheap key of everything that affects the atlas, so unrelated settings changes

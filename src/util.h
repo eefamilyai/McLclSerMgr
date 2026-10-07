@@ -21,6 +21,9 @@ std::vector<std::string> split(const std::string& s, char sep);
 bool startsWith(const std::string& s, const std::string& p);
 bool endsWith(const std::string& s, const std::string& p);
 bool contains(const std::string& s, const std::string& p);
+// ASCII case-insensitive "does it contain", allocation-free: the per-frame filter paths used to
+// lowercase a copy of every candidate line, which cost thousands of allocations a second.
+bool icontains(const std::string& haystack, const std::string& needleLower);
 std::string sanitizeFileName(const std::string& s);
 
 void setAppDataDir(const fs::path& p);   // dev/testing: redirect app data
@@ -49,6 +52,22 @@ void recycle(const fs::path& p);                  // move to Recycle Bin
 bool pickFolder(void* ownerHwnd, std::string& outUtf8);
 bool pickFile(void* ownerHwnd, const wchar_t* filter, std::string& outUtf8);
 bool pickSaveFile(void* ownerHwnd, const wchar_t* filter, const wchar_t* defExt, const std::string& suggested, std::string& outUtf8);
+
+// --- filesystem ---------------------------------------------------------------
+// Enumerates a directory without letting an error escape as an exception. The plain
+// directory_iterator increment throws on an unreadable entry (a permission-denied subdirectory,
+// a path that disappears mid-walk), and an exception escaping a worker thread - or the frame
+// loop - terminates the whole process. The callback gets each entry and its own error code.
+template <class F>
+void forEachDirEntry(const fs::path& dir, F&& fn) {
+    std::error_code ec;
+    fs::directory_iterator it(dir, ec), end;
+    while (!ec && it != end) {
+        std::error_code entryEc;
+        fn(*it, entryEc);
+        it.increment(ec);
+    }
+}
 
 // --- images -------------------------------------------------------------------
 // Minimal 24-bit PNG writer (used for generated server icons).

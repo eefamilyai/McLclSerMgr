@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -28,7 +29,9 @@ public:
 
 private:
     std::vector<std::string> lines_;
-    static bool parseLine(const std::string& line, std::string& k, std::string& v);
+    // Views into the line: the per-frame settings pages scan every line for every row, and the
+    // substring-based version allocated several strings per line looked at.
+    static bool parseLine(std::string_view line, std::string_view& k, std::string_view& v);
 };
 
 // ---------------------------------------------------------------------------
@@ -95,7 +98,7 @@ public:
     bool isActive() const { State s = state; return s == State::Starting || s == State::Running || s == State::Stopping; }
     int64_t uptimeSeconds() const;
     std::vector<std::string> players();
-    int playerCount();
+    int playerCount() const { return livePlayers; }
 
     // Console log (guarded by logMutex)
     std::mutex logMutex;
@@ -108,6 +111,7 @@ public:
     double cpuPercent = 0;
     uint64_t memBytes = 0;
     int maxPlayers = 20;
+    std::atomic<int> livePlayers{0};   // kept in step with players_ so the list can read it per frame
     std::atomic<bool> needsEula{false};
     std::atomic<bool> restartPending{false};
     std::string lastError;
@@ -126,20 +130,26 @@ public:
     void debugSetRunning(int uptimeSec, std::vector<std::string> names);
 
 private:
-    void readerLoop(void* readPipe);
+    void readerLoop(void* readPipe, void* proc);
     void processLine(const std::string& line);
     void sampleStats();
+    void setPlayers(std::vector<std::string> names);
 
     std::mutex procMu_;
+    std::mutex inMu_;         // guards hIn_ only, so a blocked write cannot stall handle cleanup
     void* hProc_ = nullptr;   // HANDLE
     void* hIn_ = nullptr;
+    // Reading server.properties is a file open plus a parse; the UI asks for the port several
+    // times per frame, so the answer is kept for a short while.
+    mutable int portCache_ = -1;
+    mutable std::chrono::steady_clock::time_point portCacheAt_{};
     std::thread reader_;
     std::chrono::steady_clock::time_point startedAt_{};
     std::chrono::steady_clock::time_point stopRequested_{};
     std::chrono::steady_clock::time_point nextAutoRestart_{};
     std::chrono::steady_clock::time_point lastSample_{};
     uint64_t lastCpu100ns_ = 0;
-    bool userStopped_ = false;
+    std::atomic<bool> userStopped_{false};   // written by the UI thread, read by the reader thread
     int crashCount_ = 0;
     bool autoRestartScheduled_ = false;
     std::mutex playersMu_;

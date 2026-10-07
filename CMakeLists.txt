@@ -42,7 +42,7 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/setup.rc PROPERTIES OBJECT_DEPEN
 
 foreach(t Voxual VoxualSetup)
   if(MSVC)
-    target_compile_options(${t} PRIVATE /utf-8 /W3 /permissive- /MP)
+    target_compile_options(${t} PRIVATE /utf-8 /EHsc /W3 /permissive- /MP)
     target_link_options(${t} PRIVATE /SUBSYSTEM:WINDOWS /MANIFEST:NO)
   endif()
 endforeach()

@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "crashlog.h"
@@ -17,7 +18,8 @@ enum class Page { Servers, Wizard, Detail, Personalize, Settings, Import, About 
 
 struct VersionFetch {
     std::mutex mu;
-    bool done = false, ok = false;
+    // Read without the lock while a fetch is in flight, so these two are atomic.
+    std::atomic<bool> done{false}, ok{false};
     std::string err;
     std::vector<providers::Version> list;
 };
@@ -122,6 +124,7 @@ public:
     void applyPersonalization(bool immediate = false);
     void prepareFrame();   // applies deferred theme changes between frames (font atlas work)
     void rememberWindowSize();
+    void joinBackgroundWork();   // joins every worker the UI started (scans, fetches, downloads, backups)
 
     // --- command line / testing helpers
     void loadDemo();
@@ -214,10 +217,14 @@ private:
     void saveAll();
     void saveSettings();
     int activeCount();
+    // Work that outlives the frame that asked for it. Threads used to be detached, which let
+    // them run past the app's own destruction (and past the server they were working on).
+    void spawnBackground(std::function<void()> fn);
+    std::shared_ptr<ServerInstance> sharedOf(ServerInstance* s);   // keeps a server alive for a worker
 
     void* hwnd_ = nullptr;
     Settings settings_;
-    std::vector<std::unique_ptr<ServerInstance>> servers_;
+    std::vector<std::shared_ptr<ServerInstance>> servers_;
     std::map<std::string, State> lastState_;
     bool demo_ = false;
     bool pendingTheme_ = false;
@@ -270,6 +277,9 @@ private:
     JavaDownload javaJob_;
     std::string rootDraft_;
     bool autoStartDone_ = false;
+
+    std::mutex bgMu_;
+    std::vector<std::thread> bg_;
 };
 
 // ---------------------------------------------------------------------------

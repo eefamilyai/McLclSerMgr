@@ -21,6 +21,9 @@ static std::string stripExt(std::string n) {
 
 static std::string lowerStr(std::string s) { return util::lower(std::move(s)); }
 
+// Case-insensitive filename compare: the list sorts used to lower two strings per comparison.
+static bool nameLess(const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()) < 0; }
+
 // ---------------------------------------------------------------------------
 // detail page
 // ---------------------------------------------------------------------------
@@ -184,13 +187,15 @@ void App::drawConsoleTab(ServerInstance& s) {
         std::lock_guard<std::mutex> lk(s.logMutex);
         std::vector<int> filtered;
         bool useFilter = !ds_.filter.empty() || ds_.logLevel > 0;
-        std::string needle = lowerStr(ds_.filter);
+        const std::string needle = util::lower(util::trim(ds_.filter));
         if (useFilter)
             for (int i = 0; i < (int)s.log.size(); ++i) {
                 const LogLine& L = s.log[i];
                 if (ds_.logLevel == 1 && L.level != LogWarn && L.level != LogError) continue;
                 if (ds_.logLevel == 2 && L.level != LogError) continue;
-                if (!needle.empty() && lowerStr(L.text).find(needle) == std::string::npos) continue;
+                // Filtered in place: lowercasing each line allocated once per line per frame,
+                // which is thousands of strings a second on a busy console.
+                if (!needle.empty() && !util::icontains(L.text, needle)) continue;
                 filtered.push_back(i);
             }
         int count = useFilter ? (int)filtered.size() : (int)s.log.size();
@@ -514,19 +519,19 @@ void App::refreshFiles(ServerInstance& s) {
     std::error_code ec;
     fs::path dir = s.cfg.path() / s.extensionFolder();
     if (!fs::is_directory(dir, ec)) return;
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        if (!e.is_regular_file(ec)) continue;
-        std::string n = util::pathStr(e.path().filename());
-        bool dis = util::endsWith(n, ".jar.disabled");
-        if (!dis && !util::endsWith(n, ".jar")) continue;
+    util::forEachDirEntry(dir, [&](const fs::directory_entry& e, std::error_code& dec) {
+        if (!e.is_regular_file(dec)) return;
+        const std::string n = util::pathStr(e.path().filename());
+        const bool dis = util::endsWith(n, ".jar.disabled");
+        if (!dis && !util::endsWith(n, ".jar")) return;
         FileEntry f;
         f.path = e.path();
         f.name = n;
-        f.size = e.file_size(ec);
+        f.size = e.file_size(dec);
         f.enabled = !dis;
         ds_.files.push_back(f);
-    }
-    std::sort(ds_.files.begin(), ds_.files.end(), [](const FileEntry& a, const FileEntry& b) { return lowerStr(a.name) < lowerStr(b.name); });
+    });
+    std::sort(ds_.files.begin(), ds_.files.end(), [](const FileEntry& a, const FileEntry& b) { return nameLess(a.name, b.name); });
 }
 
 void App::drawExtensionsTab(ServerInstance& s) {
@@ -638,16 +643,18 @@ void App::refreshBackups(ServerInstance& s) {
     std::error_code ec;
     fs::path dir = s.backupDir(settings_.root());
     if (!fs::is_directory(dir, ec)) return;
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        if (!e.is_regular_file(ec) || e.path().extension() != ".zip") continue;
+    util::forEachDirEntry(dir, [&](const fs::directory_entry& e, std::error_code& dec) {
+        if (!e.is_regular_file(dec) || e.path().extension() != ".zip") return;
         BackupEntry b;
         b.path = e.path();
         b.name = util::pathStr(e.path().stem());
-        b.size = e.file_size(ec);
-        auto ft = fs::last_write_time(e.path(), ec);
+        b.size = e.file_size(dec);
+        std::error_code tec;
+        auto ft = fs::last_write_time(e.path(), tec);
+        if (tec) return;
         b.time = util::nowUnix() - (int64_t)std::chrono::duration_cast<std::chrono::seconds>(fs::file_time_type::clock::now() - ft).count();
         ds_.backups.push_back(b);
-    }
+    });
     std::sort(ds_.backups.begin(), ds_.backups.end(), [](const BackupEntry& a, const BackupEntry& b) { return a.name > b.name; });
 }
 
@@ -669,13 +676,16 @@ void App::drawBackupsTab(ServerInstance& s) {
     ImGui::SameLine(0, S(8));
     ImGui::BeginDisabled(busy);
     if (Button(busy ? "Backing up..." : "Back up now", icon::Save, Btn::Primary, ImVec2(0, HS(40)))) {
-        ServerInstance* sp = &s;
+        // The worker takes a share of the server so that removing it mid-backup cannot free the
+        // object out from under the thread.
+        std::shared_ptr<ServerInstance> keep = sharedOf(&s);
         fs::path root = settings_.root();
         s.backupRunning = true;
-        std::thread([sp, root] {
-            bool ok = false;
-            sp->createBackup(root, &ok);
-        }).detach();
+        if (keep)
+            spawnBackground([keep, root] {
+                bool ok = false;
+                keep->createBackup(root, &ok);
+            });
         Toast("Backup started...", ToastKind::Info);
     }
     ImGui::EndDisabled();
@@ -724,10 +734,12 @@ void App::drawBackupsTab(ServerInstance& s) {
         fs::path bp = ds_.backups[del].path;
         if (settings_.confirmDestructive) {
             std::string nm = ds_.backups[del].name;
-            askConfirm({"Delete this backup?", nm + " will be moved to the Recycle Bin.", "Delete", true, [this, bp, s_ptr = &s] {
+            // Capture a share, not the address: the confirmation can outlive the server list.
+            std::shared_ptr<ServerInstance> keep = sharedOf(&s);
+            askConfirm({"Delete this backup?", nm + " will be moved to the Recycle Bin.", "Delete", true, [this, bp, keep] {
                             util::recycle(bp);
                             Toast("Backup moved to the Recycle Bin", ToastKind::Info);
-                            refreshBackups(*s_ptr);
+                            if (keep) refreshBackups(*keep);
                         }});
         } else {
             util::recycle(bp);
@@ -739,10 +751,11 @@ void App::drawBackupsTab(ServerInstance& s) {
         BackupEntry b = ds_.backups[restore];
         if (s.isActive()) Toast("Stop the server before restoring a backup", ToastKind::Warning);
         else {
-            ServerInstance* sp = &s;
+            std::shared_ptr<ServerInstance> sp = sharedOf(&s);
             askConfirm({"Restore this backup?",
                         "Your current world will be replaced with the backup from " + b.name + ". The current world is moved to the Recycle Bin first.",
                         "Restore", true, [this, sp, b] {
+                            if (!sp) return;
                             Properties p;
                             p.load(sp->propertiesPath());
                             std::string level = p.get("level-name", "world");
@@ -752,7 +765,7 @@ void App::drawBackupsTab(ServerInstance& s) {
                                 if (fs::exists(wp, ec)) util::recycle(wp);
                             }
                             fs::path dir = sp->cfg.path();
-                            std::thread([sp, b, dir] {
+                            spawnBackground([sp, b, dir] {
                                 wchar_t sys[MAX_PATH];
                                 GetSystemDirectoryW(sys, MAX_PATH);
                                 std::wstring cmd = L"\"" + (fs::path(sys) / L"tar.exe").wstring() + L"\" -xf \"" + b.path.wstring() + L"\" -C \"" +
@@ -760,7 +773,7 @@ void App::drawBackupsTab(ServerInstance& s) {
                                 int code = util::runCapture(cmd, {}, nullptr);
                                 sp->appendLog(code == 0 ? "[" VX_APP_NAME "] Backup restored: " + b.name : "[" VX_APP_NAME "] Restore failed",
                                               code == 0 ? LogSystem : LogError);
-                            }).detach();
+                            });
                             Toast("Restoring backup...", ToastKind::Info);
                         }});
         }

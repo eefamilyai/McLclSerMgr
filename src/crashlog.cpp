@@ -43,7 +43,7 @@ std::string moduleOf(void* addr) {
     return name + off;
 }
 
-void writeReport(const char* kind, unsigned code, void* addr, void* const* frames, int frameCount) {
+void writeReport(const char* kind, unsigned code, void* addr, void* const* frames, int frameCount, const std::string& note = {}) {
     std::string dir = g_logDir.empty() ? util::pathStr(util::appDataDir()) : g_logDir;
     std::string path = dir + "\\crash-" + stamp(true) + ".log";
 
@@ -57,10 +57,16 @@ void writeReport(const char* kind, unsigned code, void* addr, void* const* frame
         out += buf;
     }
     out += "process   : pid " + std::to_string((long)GetCurrentProcessId()) + "\r\n";
+    if (!note.empty()) out += "detail    : " + note + "\r\n";
     {
-        std::lock_guard<std::mutex> lk(g_mu);
+        // Crashes routinely happen inside breadcrumb()'s critical section. Blocking on that
+        // mutex here would turn a crash report into a hang, so only take it if it is free.
+        std::unique_lock<std::mutex> lk(g_mu, std::try_to_lock);
         out += "doing     :\r\n";
-        for (auto& b : g_breadcrumbs) out += "  - " + b + "\r\n";
+        if (lk.owns_lock())
+            for (auto& b : g_breadcrumbs) out += "  - " + b + "\r\n";
+        else
+            out += "  - (unavailable: the fault happened while a breadcrumb was being written)\r\n";
     }
     out += "stack     :\r\n";
     for (int i = 0; i < frameCount; ++i) {
@@ -96,7 +102,21 @@ LONG WINAPI onException(EXCEPTION_POINTERS* info) {
 void onTerminate() {
     void* frames[40] = {};
     USHORT n = RtlCaptureStackBackTrace(0, 40, frames, nullptr);
-    writeReport("std::terminate", 0, nullptr, frames, n);
+    // An uncaught exception is what normally gets here; its message is the single most useful
+    // line in the report, so pull it out before writing anything.
+    // Recorded without going near the breadcrumb lock, which the faulting thread may already
+    // hold - the whole point of this handler is that it always produces a report.
+    std::string note;
+    if (auto e = std::current_exception()) {
+        try {
+            std::rethrow_exception(e);
+        } catch (const std::exception& ex) {
+            note = ex.what();
+        } catch (...) {
+            note = "(not a std::exception)";
+        }
+    }
+    writeReport("std::terminate", 0, nullptr, frames, n, note);
     MessageBoxW(nullptr, L"Voxual hit an unexpected error and has to close. A report was written next to your settings.",
                 L"Voxual", MB_OK | MB_ICONERROR | MB_TOPMOST);
     abort();
@@ -148,15 +168,17 @@ std::string lastCrashLogPath() {
     fs::path dir = util::appDataDir();
     std::string newest;
     fs::file_time_type newestTime{};
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        std::string name = util::pathStr(e.path().filename());
-        if (name.rfind("crash-", 0) != 0 || e.path().extension() != ".log") continue;
-        auto t = fs::last_write_time(e.path(), ec);
+    util::forEachDirEntry(dir, [&](const fs::directory_entry& e, std::error_code&) {
+        const std::string name = util::pathStr(e.path().filename());
+        if (name.rfind("crash-", 0) != 0 || e.path().extension() != ".log") return;
+        std::error_code tec;
+        auto t = fs::last_write_time(e.path(), tec);
+        if (tec) return;
         if (newest.empty() || t > newestTime) {
             newest = util::pathStr(e.path());
             newestTime = t;
         }
-    }
+    });
     return newest;
 }
 

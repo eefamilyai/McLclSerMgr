@@ -195,15 +195,40 @@ void DrawAvatar(ImDrawList *dl, ImVec2 p, float size, const std::string &name, f
 }
 
 std::string FitText(const std::string &text, ImFont *font, float px, float maxW, bool fromStart) {
-    if (maxW <= 0) return text;
-    if (TextSize(font, px, text.c_str()).x <= maxW) return text;
-    std::string s = text;
-    while (s.size() > 4 && TextSize(font, px, s.c_str()).x > maxW) {
-        if (fromStart) s = "..." + s.substr(5);
-        else s.resize(s.size() - 2);
+    if (maxW <= 0 || text.empty() || !font) return text;
+    const float size = FS(px);
+    if (font->CalcTextSizeA(size, FLT_MAX, 0.f, text.c_str()).x <= maxW) return text;
+    const char *s = text.c_str();
+    const char *end = s + text.size();
+    const char *ell = "...";
+    const float budget = maxW - font->CalcTextSizeA(size, FLT_MAX, 0.f, ell).x;
+    if (budget <= 0) return ell;
+    // Walk whole code points instead of shaving bytes: the old loop re-measured the entire
+    // remaining string for every character it removed, and cut multi-byte characters in half.
+    if (!fromStart) {
+        float acc = 0;
+        const char *p = s;
+        while (p < end) {
+            const char *next = p + 1;
+            while (next < end && ((unsigned char)*next & 0xC0) == 0x80) ++next;
+            float w = font->CalcTextSizeA(size, FLT_MAX, 0.f, p, next).x;
+            if (acc + w > budget) break;
+            acc += w;
+            p = next;
+        }
+        return p > s ? text.substr(0, (size_t)(p - s)) + ell : ell;
     }
-    if (s.size() <= 4) return text.substr(0, 3) + "...";
-    return fromStart ? "..." + s.substr(3) : s + "...";
+    float acc = 0;
+    const char *p = end;
+    while (p > s) {
+        const char *prev = p - 1;
+        while (prev > s && ((unsigned char)*prev & 0xC0) == 0x80) --prev;
+        float w = font->CalcTextSizeA(size, FLT_MAX, 0.f, prev, p).x;
+        if (acc + w > budget) break;
+        acc += w;
+        p = prev;
+    }
+    return p > s ? ell + std::string(p, end) : ell;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,16 +468,17 @@ bool Toggle(const char *id, bool *v) {
     if (ImGui::IsItemFocused()) dl->AddRect(ImVec2(p.x - S(2), p.y - S(2)), ImVec2(p.x + w + S(2), p.y + h + S(2)), Fade(Accent(0.65f)), h * 0.5f + S(2), 0, 1.5f);
     float r = h * 0.5f - S(3.2f);
     float cx = p.x + h * 0.5f + (w - h) * t;
-    ImU32 knob = Mix(RGBA(col::mute + 0x202020), RGBA(col::onAccent), t);
-    if (col::panel != 0xFFFFFF) knob = Mix(IM_COL32(0xA7, 0xB0, 0xC4, 255), RGBA(col::onAccent), t);
-    else knob = Mix(IM_COL32(0xFF, 0xFF, 0xFF, 255), RGBA(col::onAccent), t);
+    // The previous first line added 0x202020 to a packed colour - which carries between
+    // channels - and was overwritten by both branches below anyway.
+    const ImU32 knobOff = col::panel == 0xFFFFFF ? IM_COL32(0xFF, 0xFF, 0xFF, 255) : IM_COL32(0xA7, 0xB0, 0xC4, 255);
+    ImU32 knob = Mix(knobOff, RGBA(col::onAccent), t);
     dl->AddCircleFilled(ImVec2(cx, p.y + h * 0.5f), r, Fade(knob), 24);
     ImGui::PopID();
     return clicked;
 }
 
-static void pushFieldStyle() {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(D(12), D(10)));
+static void pushFieldStyle(float padX) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(D(padX), D(10)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, RD(10));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, RGBA(col::field));
@@ -473,8 +499,8 @@ static void focusRing() {
         dl->AddRect(a, b, Fade(RGBA(col::borderHi)), RD(10), 0, 1.f);
 }
 
-bool InputText(const char *id, std::string *s, const char *hint, float width, int flags, ImGuiInputTextCallback cb, void *ud) {
-    pushFieldStyle();
+bool InputText(const char *id, std::string *s, const char *hint, float width, int flags, ImGuiInputTextCallback cb, void *ud, float padX) {
+    pushFieldStyle(padX);
     ImGui::PushFont(fRegular, FS(14.5f));
     // width == -1: full width. width < -1: leave |width| px free on the right (ImGui's idiom).
     ImGui::SetNextItemWidth(width < -1 ? width : (width < 0 ? ImGui::GetContentRegionAvail().x : S(width)));
@@ -490,9 +516,9 @@ bool SearchBox(const char *id, std::string *text, const char *hint, float width)
     ImGui::PushID(id);
     float h = HS(38);
     float reserve = text->empty() ? 0.f : h + S(2);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(D(34), D(10)));
-    bool changed = InputText("##q", text, hint, width < -1 ? width + reserve : (width < 0 ? -1 : width), 0);
-    ImGui::PopStyleVar();
+    // The padding has to reach the field itself: pushing it here did nothing because InputText
+    // pushed its own afterwards, which left the search icon sitting on top of the placeholder.
+    bool changed = InputText("##q", text, hint, width < -1 ? width + reserve : (width < 0 ? -1 : width), 0, nullptr, nullptr, 34.f);
     ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     DrawIcon(dl, ImVec2(a.x + D(18), (a.y + b.y) * 0.5f), icon::Search, 15.f, RGBA(col::mute));
@@ -504,12 +530,15 @@ bool SearchBox(const char *id, std::string *text, const char *hint, float width)
             clear = true;
         }
     }
+    // The clear button is positioned by hand, so restore the layout cursor under the field:
+    // it used to stay on the button's row and the next widget could overlap the box.
+    ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
     ImGui::PopID();
     return changed || clear;
 }
 
 bool InputInt(const char *id, int *v, int lo, int hi, float width) {
-    pushFieldStyle();
+    pushFieldStyle(12.f);
     ImGui::PushFont(fRegular, FS(14.5f));
     ImGui::SetNextItemWidth(S(width));
     bool r = ImGui::InputInt(id, v, 0, 0);
@@ -522,7 +551,7 @@ bool InputInt(const char *id, int *v, int lo, int hi, float width) {
 }
 
 bool Combo(const char *id, int *cur, const char *const *items, int n, float width) {
-    pushFieldStyle();
+    pushFieldStyle(12.f);
     ImGui::PushFont(fRegular, FS(14.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, RD(12));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(D(6), D(6)));
@@ -650,6 +679,10 @@ void Chip(const char *text, ImU32 color) {
 }
 
 bool Tabs(const char *id, const char *const *labels, const char *const *icons, int n, int *cur) {
+    if (n <= 0 || !cur || !labels) return false;
+    // widths[*cur] below indexes a vector, so a caller holding a stale tab index would read
+    // past the end of it. Clamp once, up front, and hand the corrected index back.
+    *cur = std::clamp(*cur, 0, n - 1);
     ImGui::PushID(id);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     float h = HS(44), pad = D(4), gap = S(2);
@@ -703,6 +736,8 @@ bool Tabs(const char *id, const char *const *labels, const char *const *icons, i
 }
 
 bool Segmented(const char *id, const char *const *labels, int n, int *cur, float width) {
+    if (n <= 0 || !cur || !labels) return false;
+    *cur = std::clamp(*cur, 0, n - 1);
     ImGui::PushID(id);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     float h = HS(34), pad = D(3);

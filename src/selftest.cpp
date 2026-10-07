@@ -100,7 +100,9 @@ int runSelfTest(const std::string& spec, const std::string& logPath) {
         bool bok = false;
         srv.createBackup(root, &bok);
         say(std::string("backup ok=") + (bok ? "yes" : "no"));
-        for (auto& e : fs::directory_iterator(srv.backupDir(root), ec)) say("  backup file: " + util::pathStr(e.path().filename()) + " " + util::formatBytes(e.file_size(ec)));
+        util::forEachDirEntry(srv.backupDir(root), [&](const fs::directory_entry& e, std::error_code& dec) {
+            say("  backup file: " + util::pathStr(e.path().filename()) + " " + util::formatBytes(e.file_size(dec)));
+        });
         pump();
 
         srv.stop();

@@ -11,12 +11,17 @@
 // ===========================================================================
 // Properties
 // ===========================================================================
-bool Properties::parseLine(const std::string& line, std::string& k, std::string& v) {
-    std::string t = util::trim(line);
+bool Properties::parseLine(std::string_view line, std::string_view& k, std::string_view& v) {
+    size_t a = 0, b = line.size();
+    while (a < b && (unsigned char)line[a] <= ' ') ++a;
+    while (b > a && (unsigned char)line[b - 1] <= ' ') --b;
+    std::string_view t = line.substr(a, b - a);
     if (t.empty() || t[0] == '#' || t[0] == '!') return false;
-    auto eq = t.find('=');
-    if (eq == std::string::npos) return false;
-    k = util::trim(t.substr(0, eq));
+    size_t eq = t.find('=');
+    if (eq == std::string_view::npos) return false;
+    size_t kb = eq;
+    while (kb > 0 && (unsigned char)t[kb - 1] <= ' ') --kb;
+    k = t.substr(0, kb);
     v = t.substr(eq + 1);
     return true;
 }
@@ -71,16 +76,16 @@ bool Properties::save(const fs::path& p) const {
 }
 
 bool Properties::has(const std::string& key) const {
-    std::string k, v;
+    std::string_view k, v;
     for (auto& l : lines_)
         if (parseLine(l, k, v) && k == key) return true;
     return false;
 }
 
 std::string Properties::get(const std::string& key, const std::string& def) const {
-    std::string k, v;
+    std::string_view k, v;
     for (auto& l : lines_)
-        if (parseLine(l, k, v) && k == key) return unescapeUnicode(v);
+        if (parseLine(l, k, v) && k == key) return unescapeUnicode(std::string(v));
     return def;
 }
 
@@ -97,7 +102,7 @@ bool Properties::getBool(const std::string& key, bool def) const {
 }
 
 void Properties::set(const std::string& key, const std::string& value) {
-    std::string k, v;
+    std::string_view k, v;
     std::string line = key + "=" + escapeUnicode(value);
     for (auto& l : lines_)
         if (parseLine(l, k, v) && k == key) { l = line; return; }
@@ -117,6 +122,9 @@ const char* stateName(State s) {
     }
     return "";
 }
+
+// Upper bound of the console line setting in Settings (500..20000); the UI trims below it.
+static constexpr size_t kLogHardMax = 20000;
 
 namespace {
 HANDLE jobHandle() {
@@ -157,13 +165,25 @@ ServerInstance::~ServerInstance() {
         std::lock_guard<std::mutex> lk(procMu_);
         if (hProc_) TerminateProcess((HANDLE)hProc_, 1);
     }
-    if (reader_.joinable()) reader_.join();
+    {
+        std::lock_guard<std::mutex> lk(inMu_);
+        if (hIn_) { CloseHandle((HANDLE)hIn_); hIn_ = nullptr; }
+    }
+    // A grandchild (a forked Forge/NeoForge process, say) can hold the stdout pipe open after
+    // the server itself is gone, which left the reader blocked in ReadFile and the join below
+    // waiting forever. Cancel that read before waiting for the thread.
+    if (reader_.joinable()) {
+        CancelSynchronousIo(reader_.native_handle());
+        reader_.join();
+    }
 }
 
 void ServerInstance::appendLog(const std::string& text, uint8_t level) {
     std::lock_guard<std::mutex> lk(logMutex);
     log.push_back({text, level});
-    if (log.size() > 8000) log.erase(log.begin(), log.begin() + 1000);
+    // Hard ceiling only: the console setting (up to 20000 lines) trims this from the UI thread,
+    // and the old fixed 8000 silently capped that setting.
+    if (log.size() > kLogHardMax) log.erase(log.begin(), log.begin() + (kLogHardMax / 8));
     ++logSerial;
 }
 
@@ -183,15 +203,19 @@ std::vector<std::string> ServerInstance::players() {
     return players_;
 }
 
-int ServerInstance::playerCount() {
+void ServerInstance::setPlayers(std::vector<std::string> names) {
     std::lock_guard<std::mutex> lk(playersMu_);
-    return (int)players_.size();
+    players_ = std::move(names);
+    livePlayers = (int)players_.size();
 }
 
 int ServerInstance::configuredPort() const {
+    auto now = std::chrono::steady_clock::now();
+    if (portCache_ >= 0 && now - portCacheAt_ < std::chrono::seconds(5)) return portCache_;
     Properties p;
-    if (p.load(propertiesPath())) return p.getInt("server-port", 25565);
-    return 25565;
+    portCache_ = p.load(propertiesPath()) ? p.getInt("server-port", 25565) : 25565;
+    portCacheAt_ = now;
+    return portCache_;
 }
 
 std::string ServerInstance::extensionFolder() const { return providers::info(cfg.sw()).extensionKind; }
@@ -205,7 +229,7 @@ void ServerInstance::acceptEula() {
 
 void ServerInstance::debugSetRunning(int uptimeSec, std::vector<std::string> names) {
     startedAt_ = std::chrono::steady_clock::now() - std::chrono::seconds(uptimeSec);
-    { std::lock_guard<std::mutex> lk(playersMu_); players_ = std::move(names); }
+    setPlayers(std::move(names));
     state = State::Running;
 }
 
@@ -246,7 +270,14 @@ bool ServerInstance::start(std::string& err) {
 
     SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
     HANDLE outR = nullptr, outW = nullptr, inR = nullptr, inW = nullptr;
-    if (!CreatePipe(&outR, &outW, &sa, 0) || !CreatePipe(&inR, &inW, &sa, 0)) { err = "Could not create pipes"; return false; }
+    if (!CreatePipe(&outR, &outW, &sa, 0)) { err = "Could not create pipes"; return false; }
+    if (!CreatePipe(&inR, &inW, &sa, 0)) {
+        // The first pipe already exists, so both of its handles have to go back.
+        CloseHandle(outR);
+        CloseHandle(outW);
+        err = "Could not create pipes";
+        return false;
+    }
     SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(inW, HANDLE_FLAG_INHERIT, 0);
 
@@ -278,10 +309,8 @@ bool ServerInstance::start(std::string& err) {
         hProc_ = pi.hProcess;
         hIn_ = inW;
     }
-    {
-        std::lock_guard<std::mutex> lk(playersMu_);
-        players_.clear();
-    }
+    setPlayers({});
+    portCache_ = -1;   // the port may have been edited while the server was stopped
     Properties p;
     if (p.load(propertiesPath())) maxPlayers = p.getInt("max-players", 20);
 
@@ -295,11 +324,11 @@ bool ServerInstance::start(std::string& err) {
     appendLog("[Voxual] Starting with Java " + std::to_string(jv->major) + " (" + std::to_string(minMb) + "-" +
                   std::to_string(maxMb) + " MB)...",
               LogSystem);
-    reader_ = std::thread([this, outR] { readerLoop(outR); });
+    reader_ = std::thread([this, outR, proc = pi.hProcess] { readerLoop(outR, proc); });
     return true;
 }
 
-void ServerInstance::readerLoop(void* readPipe) {
+void ServerInstance::readerLoop(void* readPipe, void* procHandle) {
     HANDLE rd = (HANDLE)readPipe;
     char buf[4096];
     std::string partial;
@@ -307,35 +336,39 @@ void ServerInstance::readerLoop(void* readPipe) {
         DWORD n = 0;
         if (!ReadFile(rd, buf, sizeof buf, &n, nullptr) || n == 0) break;
         partial.append(buf, n);
-        size_t pos;
-        while ((pos = partial.find('\n')) != std::string::npos) {
-            processLine(partial.substr(0, pos));
-            partial.erase(0, pos + 1);
+        // Emit the complete lines in one pass with a single erase at the end. Shifting the
+        // remainder once per line made a chatty startup log quadratic in its output size.
+        size_t start = 0;
+        for (;;) {
+            size_t pos = partial.find('\n', start);
+            if (pos == std::string::npos) break;
+            processLine(partial.substr(start, pos - start));
+            start = pos + 1;
         }
+        partial.erase(0, start);
     }
     if (!partial.empty()) processLine(partial);
     CloseHandle(rd);
 
+    HANDLE proc = (HANDLE)procHandle;
     DWORD code = 0;
-    HANDLE proc;
-    {
-        std::lock_guard<std::mutex> lk(procMu_);
-        proc = (HANDLE)hProc_;
-    }
     if (proc) {
         WaitForSingleObject(proc, 8000);
         GetExitCodeProcess(proc, &code);
     }
     {
-        std::lock_guard<std::mutex> lk(procMu_);
-        if (hIn_) CloseHandle((HANDLE)hIn_);
-        if (hProc_) CloseHandle((HANDLE)hProc_);
-        hIn_ = hProc_ = nullptr;
+        std::lock_guard<std::mutex> lk(inMu_);
+        if (hIn_) { CloseHandle((HANDLE)hIn_); hIn_ = nullptr; }
     }
     {
-        std::lock_guard<std::mutex> lk(playersMu_);
-        players_.clear();
+        std::lock_guard<std::mutex> lk(procMu_);
+        // Close only the handle this reader owns: a restart may already have installed a new one.
+        if (proc && hProc_ == procHandle) {
+            CloseHandle(proc);
+            hProc_ = nullptr;
+        }
     }
+    setPlayers({});
     bool clean = userStopped_ || state == State::Stopping || code == 0;
     if (clean) {
         appendLog("[Voxual] Server stopped.", LogSystem);
@@ -360,7 +393,12 @@ void ServerInstance::processLine(const std::string& raw) {
         state = State::Running;
         crashCount_ = 0;
     } else if (line.find("Stopping the server") != std::string::npos || line.find("Stopping server") != std::string::npos) {
-        if (state == State::Running || state == State::Starting) state = State::Stopping;
+        if (state == State::Running || state == State::Starting) {
+            state = State::Stopping;
+            // A server that shuts itself down must still get the full grace period before
+            // tick() force-kills it. Leaving the deadline unset made that happen immediately.
+            stopRequested_ = std::chrono::steady_clock::now();
+        }
     } else if (line.find("agree to the EULA") != std::string::npos) {
         needsEula = true;
     } else if (line.find(" joined the game") != std::string::npos || line.find(" left the game") != std::string::npos) {
@@ -375,13 +413,16 @@ void ServerInstance::processLine(const std::string& raw) {
                 auto it = std::find(players_.begin(), players_.end(), name);
                 if (join && it == players_.end()) players_.push_back(name);
                 if (!join && it != players_.end()) players_.erase(it);
+                livePlayers = (int)players_.size();
             }
         }
     }
 }
 
 void ServerInstance::sendCommand(const std::string& cmd) {
-    std::lock_guard<std::mutex> lk(procMu_);
+    // The stdin handle has its own lock: a full pipe buffer blocks WriteFile, and holding the
+    // process lock across that would also stall the reader thread's handle cleanup.
+    std::lock_guard<std::mutex> lk(inMu_);
     if (!hIn_) return;
     std::string data = cmd + "\n";
     DWORD w = 0;
@@ -399,7 +440,7 @@ void ServerInstance::stop() {
     sendCommand("stop");
     // Closing stdin afterwards lets the server's console thread see EOF; otherwise some
     // servers (Paper & friends) hang on shutdown waiting for the blocked reader.
-    std::lock_guard<std::mutex> lk(procMu_);
+    std::lock_guard<std::mutex> lk(inMu_);
     if (hIn_) { CloseHandle((HANDLE)hIn_); hIn_ = nullptr; }
 }
 
@@ -465,7 +506,7 @@ void ServerInstance::sampleStats() {
         auto toU64 = [](FILETIME f) { return ((uint64_t)f.dwHighDateTime << 32) | f.dwLowDateTime; };
         uint64_t total = toU64(k) + toU64(u);
         double wall100ns = std::chrono::duration<double>(now - lastSample_).count() * 1e7;
-        static const int cores = [] { SYSTEM_INFO si; GetSystemInfo(&si); return (int)si.dwNumberOfProcessors; }();
+        static const int cores = [] { SYSTEM_INFO si; GetSystemInfo(&si); return std::max<int>(1, (int)si.dwNumberOfProcessors); }();
         if (lastCpu100ns_ && wall100ns > 0) cpuPercent = std::min(100.0, (double)(total - lastCpu100ns_) / wall100ns / cores * 100.0);
         lastCpu100ns_ = total;
     }

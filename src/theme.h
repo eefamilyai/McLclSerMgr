@@ -82,7 +82,8 @@ struct Options {
 extern Palette g_pal;            // active palette after runtime overrides
 extern ImFont *fRegular, *fBold, *fMono, *fIcon;   // built by LoadFonts()
 extern Options g_opt;
-extern float g_scale;            // DPI scale
+extern float g_scale;            // DPI scale - set it through SetScale()
+void SetScale(float scale);      // clamps to a range the layout maths can survive
 
 // --- palettes / accents ----------------------------------------------------
 int PaletteCount();

@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 #include <regex>
+#include <string_view>
 
 #include "http.h"
 #include "nlohmann/json.hpp"
@@ -40,23 +41,31 @@ const SoftwareInfo kInfos[kSoftwareCount] = {
 
 std::mutex g_cacheMu;
 std::map<int, std::vector<Version>> g_cache;
+std::map<std::string, int> g_javaCache;
+std::once_flag g_mojangOnce;
 
 struct MojangVersion {
     std::string id, type, url;
 };
 std::vector<MojangVersion> g_mojang;
+std::string g_mojangErr;
+bool g_mojangOk = false;
 
+// The manifest is fetched once. Holding the cache mutex across the request made every other
+// thread wait out the whole download, so the fetch has its own once-flag instead.
 bool loadMojang(std::string& err) {
-    std::lock_guard<std::mutex> lk(g_cacheMu);
-    if (!g_mojang.empty()) return true;
-    auto r = http::get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
-    if (!r.ok()) { err = r.error; return false; }
-    try {
-        json j = json::parse(r.body);
-        for (auto& v : j.at("versions"))
-            g_mojang.push_back({v.at("id").get<std::string>(), v.at("type").get<std::string>(), v.at("url").get<std::string>()});
-    } catch (const std::exception& e) { err = std::string("Bad Mojang manifest: ") + e.what(); return false; }
-    return !g_mojang.empty();
+    std::call_once(g_mojangOnce, [] {
+        auto r = http::get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+        if (!r.ok()) { g_mojangErr = r.error; return; }
+        try {
+            json j = json::parse(r.body);
+            for (auto& v : j.at("versions"))
+                g_mojang.push_back({v.at("id").get<std::string>(), v.at("type").get<std::string>(), v.at("url").get<std::string>()});
+            g_mojangOk = !g_mojang.empty();
+        } catch (const std::exception& e) { g_mojangErr = std::string("Bad Mojang manifest: ") + e.what(); }
+    });
+    err = g_mojangErr;
+    return g_mojangOk;
 }
 
 bool isStableName(const std::string& id) {
@@ -310,6 +319,12 @@ bool resolve(Software s, const std::string& ver, Download& d, std::string& err) 
 }
 
 int requiredJava(const std::string& ver) {
+    {
+        std::lock_guard<std::mutex> lk(g_cacheMu);
+        auto it = g_javaCache.find(ver);
+        if (it != g_javaCache.end()) return it->second;
+    }
+    int result = 0;
     std::string err;
     if (loadMojang(err)) {
         std::string url;
@@ -320,12 +335,17 @@ int requiredJava(const std::string& ver) {
             if (r.ok()) {
                 try {
                     json j = json::parse(r.body);
-                    if (j.contains("javaVersion")) return j["javaVersion"]["majorVersion"].get<int>();
+                    if (j.contains("javaVersion")) result = j["javaVersion"]["majorVersion"].get<int>();
                 } catch (...) {}
             }
         }
     }
-    return heuristicJava(ver);
+    if (result <= 0) result = heuristicJava(ver);
+    {
+        std::lock_guard<std::mutex> lk(g_cacheMu);
+        g_javaCache[ver] = result;
+    }
+    return result;
 }
 
 int heuristicJava(const std::string& ver) {

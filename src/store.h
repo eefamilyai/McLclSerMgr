@@ -62,11 +62,14 @@ struct Settings {
 
     void load();
     void save() const;
+    void normalize();                 // clamps values a hand-edited file or theme import could push out of range
     fs::path root() const;            // never empty
     theme::Options themeOptions() const;
 };
 
 namespace store {
-void loadServers(std::vector<std::unique_ptr<ServerInstance>>& out);
-void saveServers(const std::vector<std::unique_ptr<ServerInstance>>& servers);
+// Shared ownership: a background backup or restore keeps the server it is working on alive
+// even if the user removes it from the list mid-flight.
+void loadServers(std::vector<std::shared_ptr<ServerInstance>>& out);
+void saveServers(const std::vector<std::shared_ptr<ServerInstance>>& servers);
 }  // namespace store

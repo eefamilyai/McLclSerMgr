@@ -14,6 +14,7 @@
 #include "app.h"
 #include "crashlog.h"
 #include "imgui.h"
+#include "java.h"
 #include "logo.h"
 #include "shot.h"
 #include "imgui_impl_dx11.h"
@@ -39,8 +40,9 @@ static UINT g_resizeW = 0, g_resizeH = 0;
 static HICON g_icon = nullptr, g_iconSmall = nullptr;
 
 static void createRtv() {
+    if (!g_swap || !g_dev) return;
     ID3D11Texture2D* back = nullptr;
-    g_swap->GetBuffer(0, IID_PPV_ARGS(&back));
+    if (FAILED(g_swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return;
     g_dev->CreateRenderTargetView(back, nullptr, &g_rtv);
     back->Release();
 }
@@ -97,7 +99,7 @@ static LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_DPICHANGED: {
-        ui::g_scale = LOWORD(wp) / 96.f;
+        theme::SetScale(LOWORD(wp) / 96.f);
         if (g_app) g_app->applyPersonalization();
         ui::SetupStyle();
         RECT* r = (RECT*)lp;
@@ -172,7 +174,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     float dpi = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
     if (!shotPath.empty()) dpi = scaleOverride > 0 ? scaleOverride : 1.f;
-    ui::g_scale = dpi;
+    theme::SetScale(dpi);
+    dpi = theme::g_scale;   // read back the clamped value, the window maths below uses it
 
     g_icon = logo::load(inst, GetSystemMetrics(SM_CXICON));
     g_iconSmall = logo::load(inst, GetSystemMetrics(SM_CXSMICON));
@@ -314,7 +317,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         if (!automated && g_swapOccluded && g_swap->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) { Sleep(40); continue; }
         g_swapOccluded = false;
         if (g_resizeW && g_resizeH) {
+            // ResizeBuffers fails while the pipeline still references a back buffer, and the
+            // failed resize left the window showing a stretched image at the old size.
+            g_ctx->OMSetRenderTargets(0, nullptr, nullptr);
             releaseRtv();
+            g_ctx->Flush();
             g_swap->ResizeBuffers(0, g_resizeW, g_resizeH, DXGI_FORMAT_UNKNOWN, 0);
             g_resizeW = g_resizeH = 0;
             createRtv();
@@ -367,8 +374,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         ImGui::NewFrame();
         app.frame();
         ImGui::Render();
-        g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
-        g_ctx->ClearRenderTargetView(g_rtv, clear);
+        if (g_rtv) {
+            g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
+            g_ctx->ClearRenderTargetView(g_rtv, clear);
+        }
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         ++frame;
         if (!pendingShot.empty() && scriptWait <= 1) {
@@ -393,6 +402,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     g_app->rememberWindowSize();
     crashlog::endSession();
+    app.joinBackgroundWork();   // scanners, version fetches, downloads and backups
+    java::waitForScan();
     g_app = nullptr;
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

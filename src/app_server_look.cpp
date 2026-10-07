@@ -139,6 +139,7 @@ constexpr int kPresetCount = (int)(sizeof kPresets / sizeof kPresets[0]);
 }  // namespace
 
 void App::applyGameplayPreset(ServerInstance& s, int preset) {
+    if (preset < 0 || preset >= kPresetCount) return;   // kPresets[preset] is indexed below
     Properties& pr = ds_.props;
     uint64_t totalMB = util::totalRamMB();
     int cap = (int)std::max<uint64_t>(2048, totalMB * 80 / 100);
@@ -322,7 +323,6 @@ void App::drawPersonalizeTab(ServerInstance& s) {
     }
     Gap(8);
     {
-        float x = 0;
         for (int i = 0; i < motd::colorCount(); ++i) {
             ImGui::PushID(i);
             if (i) ImGui::SameLine(0, S(5));
@@ -334,9 +334,7 @@ void App::drawPersonalizeTab(ServerInstance& s) {
             }
             Tooltip(motd::colors()[i].name);
             ImGui::PopID();
-            x += 1;
         }
-        (void)x;
         ImGui::SameLine(0, S(8));
         if (Button("Bold", nullptr, Btn::Ghost, ImVec2(0, HS(24)))) {
             ds_.motdDraft += "&l";

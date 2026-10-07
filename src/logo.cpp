@@ -91,6 +91,11 @@ static HICON fromPixels(int size) {
     HDC dc = GetDC(nullptr);
     void* bits = nullptr;
     HBITMAP color = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!color || !bits) {
+        if (color) DeleteObject(color);
+        ReleaseDC(nullptr, dc);
+        return nullptr;
+    }
     memcpy(bits, px.data(), px.size() * 4);
     HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
     ICONINFO ii{TRUE, 0, 0, mask, color};

@@ -57,7 +57,7 @@ void App::init(void* hwnd) {
     applyPersonalization(true);
     SetToastPlacement(settings_.toastCorner, settings_.toastSeconds);
     java::setManagedRoot(util::appDataDir() / "runtimes");
-    std::thread([] { java::scan(); }).detach();
+    java::scanAsync();
     store::loadServers(servers_);
     for (auto& s : servers_) lastState_[s->cfg.id] = s->state;
     rootDraft_ = settings_.serversRoot;
@@ -102,6 +102,29 @@ void App::rememberWindowSize() {
 
 void App::saveSettings() { if (!demo_) settings_.save(); }
 
+std::shared_ptr<ServerInstance> App::sharedOf(ServerInstance* s) {
+    for (auto& p : servers_)
+        if (p.get() == s) return p;
+    return nullptr;
+}
+
+void App::spawnBackground(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(bgMu_);
+    bg_.emplace_back(std::move(fn));
+}
+
+// Called once on the way out: a detached worker used to keep running while the CRT tore down
+// the statics it touches (the Java cache, the provider caches, util's data folder).
+void App::joinBackgroundWork() {
+    std::vector<std::thread> pending;
+    {
+        std::lock_guard<std::mutex> lk(bgMu_);
+        pending.swap(bg_);
+    }
+    for (auto& t : pending)
+        if (t.joinable()) t.join();
+}
+
 ServerInstance* App::find(const std::string& id) {
     for (auto& s : servers_)
         if (s->cfg.id == id) return s.get();
@@ -142,7 +165,7 @@ void App::loadDemo() {
         c.createdAt = util::nowUnix() - 86400 * 3;
         c.lastStarted = util::nowUnix() - 3600;
         if (std::string(d.name) == "Survival SMP") { c.pinned = true; c.note = "Main world - keep backups weekly."; }
-        auto s = std::make_unique<ServerInstance>(c);
+        auto s = std::make_shared<ServerInstance>(c);
         s->maxPlayers = 20;
         if (d.st == State::Running) {
             s->debugSetRunning(d.up, d.pl);
@@ -258,7 +281,7 @@ void App::tickServers() {
         }
     }
     pollJob();
-    if (!autoStartDone_ && !java::scanning() && !java::all().empty()) {
+    if (!autoStartDone_ && !java::scanning() && java::count() != 0) {
         autoStartDone_ = true;
         if (!demo_)
             for (auto& s : servers_)
@@ -512,9 +535,11 @@ void App::drawSidebar(float w) {
         dl->AddRectFilled(bp, ImVec2(bp.x + cw - D(28), bp.y + S(6)), Fade(RGBA(col::track)), S(3));
         if (frac > 0)
             dl->AddRectFilled(bp, ImVec2(bp.x + (cw - D(28)) * frac, bp.y + S(6)), Fade(frac > 0.85f ? RGBA(col::red) : Accent()), S(3));
-        auto js = java::all();
-        std::string jt = java::scanning() && js.empty() ? "Detecting Java..." : js.empty() ? "No Java found" : "Java " + std::to_string(js.front().major) + " ready";
-        ImU32 jc = js.empty() ? (java::scanning() ? RGBA(col::dim) : RGBA(col::amber)) : RGBA(col::green);
+        // Counted instead of copied: this runs on every frame of the sidebar.
+        const bool anyJava = java::count() != 0;
+        std::string jt = !anyJava ? (java::scanning() ? "Detecting Java..." : "No Java found")
+                                  : "Java " + std::to_string(java::newestMajor()) + " ready";
+        ImU32 jc = anyJava ? RGBA(col::green) : (java::scanning() ? RGBA(col::dim) : RGBA(col::amber));
         dl->AddCircleFilled(ImVec2(p.x + D(20), p.y + S(66)), S(3.5f), Fade(jc), 14);
         DrawStr(dl, fRegular, 12.5f, ImVec2(p.x + D(32), p.y + S(58)), RGBA(col::dim), jt.c_str());
         ImGui::Dummy(ImVec2(cw, footerH));
@@ -613,8 +638,8 @@ void App::drawTopBar(const char* title, const char* subtitle, const std::functio
     }
     if (brandRgb) {
         float tile = HS(46);
-        ImVec2 tp = ImGui::GetCursorScreenPos();
         ImGui::SetCursorPosY(rowY + S(4));
+        ImVec2 tp = ImGui::GetCursorScreenPos();   // taken after the offset so the tile lands in its slot
         DrawTile(ImGui::GetWindowDrawList(), tp, tile, brandRgb);
         ImGui::Dummy(ImVec2(tile, tile + S(4)));
         ImGui::SameLine(0, S(14));
@@ -788,7 +813,8 @@ void App::drawCommandPalette() {
     std::string needle = util::lower(paletteQuery_);
     std::vector<const Command*> matches;
     for (auto& c : commands_) {
-        if (needle.empty() || util::contains(util::lower(c.label), needle) || util::contains(util::lower(c.hint), needle)) matches.push_back(&c);
+        // Allocation-free folding: this ran over every command on every frame.
+        if (needle.empty() || util::icontains(c.label, needle) || util::icontains(c.hint, needle)) matches.push_back(&c);
     }
     if (matches.empty()) {
         Label("Nothing matches that.", 14.f, col::mute);
@@ -942,7 +968,10 @@ void App::removeServer(ServerInstance* t, bool deleteFiles) {
     fs::path dir = t->cfg.path();
     std::string name = t->cfg.name;
     if (sel_ == t) sel_ = nullptr;
-    servers_.erase(std::remove_if(servers_.begin(), servers_.end(), [&](const std::unique_ptr<ServerInstance>& s) { return s.get() == t; }), servers_.end());
+    if (deleteTarget_ == t) deleteTarget_ = nullptr;
+    servers_.erase(std::remove_if(servers_.begin(), servers_.end(),
+                                  [&](const std::shared_ptr<ServerInstance>& s) { return s.get() == t; }),
+                   servers_.end());
     if (deleteFiles && !demo_) util::recycle(dir);
     saveAll();
     buildCommands();

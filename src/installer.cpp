@@ -88,9 +88,12 @@ void InstallJob::run() {
         ++si;
         setStep(si, StepState::Active, "Checking which Java this version needs");
         int major = P::requiredJava(req.mcVersion);
-        if (java::all().empty()) java::scan();
+        if (java::count() == 0) java::scan();
         bool exact = false;
-        for (auto& j : java::all()) exact = exact || j.major == major;
+        {
+            const std::vector<java::Install> js = java::all();
+            for (auto& j : js) exact = exact || j.major == major;
+        }
         if (exact) {
             setStep(si, StepState::Done, "Java " + std::to_string(major) + " found");
             addLog("Java " + std::to_string(major) + " is already installed");
@@ -157,13 +160,18 @@ void InstallJob::run() {
             if (code != 0) return fail("The installer failed (exit code " + std::to_string(code) + "). See the log for details.");
             fs::remove(jar, ec);
             // Locate how to launch it
-            std::string target;
+            std::string target, bestVer;
             for (const char* group : {"libraries/net/neoforged/neoforge", "libraries/net/minecraftforge/forge"}) {
                 fs::path g = req.dir / group;
                 if (!fs::is_directory(g, ec)) continue;
-                for (auto& v : fs::directory_iterator(g, ec))
-                    if (fs::exists(v.path() / "win_args.txt", ec))
-                        target = std::string(group) + "/" + util::pathStr(v.path().filename()) + "/win_args.txt";
+                util::forEachDirEntry(g, [&](const fs::directory_entry& v, std::error_code&) {
+                    if (!fs::exists(v.path() / "win_args.txt", ec)) return;
+                    // An install can leave more than one version behind: launch the newest.
+                    const std::string ver = util::pathStr(v.path().filename());
+                    if (!target.empty() && util::compareVersions(ver, bestVer) <= 0) return;
+                    bestVer = ver;
+                    target = std::string(group) + "/" + ver + "/win_args.txt";
+                });
             }
             if (!target.empty()) {
                 c.launchMode = "args";
@@ -171,10 +179,10 @@ void InstallJob::run() {
             } else {
                 // Older Forge: forge-<ver>.jar / forge-<ver>-universal.jar
                 std::string best;
-                for (auto& f : fs::directory_iterator(req.dir, ec)) {
-                    std::string n = util::pathStr(f.path().filename());
+                util::forEachDirEntry(req.dir, [&](const fs::directory_entry& f, std::error_code&) {
+                    const std::string n = util::pathStr(f.path().filename());
                     if (util::startsWith(n, "forge-") && util::endsWith(n, ".jar") && n.find("installer") == std::string::npos) best = n;
-                }
+                });
                 if (best.empty()) return fail("Installer finished but no launchable server was produced");
                 c.launchTarget = best;
             }
@@ -187,10 +195,13 @@ void InstallJob::run() {
         setProgress(-1.f);
         if (req.acceptEula)
             util::writeFile(req.dir / "eula.txt", "# Accepted via Voxual (https://aka.ms/MinecraftEULA)\neula=true\n");
+        // Start from whatever is already there: installing into a folder that already had a
+        // server.properties used to replace it with these two keys alone.
         Properties p;
+        p.load(req.dir / "server.properties");
         p.set("server-port", std::to_string(req.port));
         p.set("motd", req.motd.empty() ? req.name : req.motd);
-        p.save(req.dir / "server.properties");
+        if (!p.save(req.dir / "server.properties")) return fail("Could not write server.properties");
         setStep(si, StepState::Done, "Ready");
         setProgress(1.f);
         addLog("Server created in " + util::pathStr(req.dir));

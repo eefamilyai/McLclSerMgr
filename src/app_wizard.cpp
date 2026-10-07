@@ -35,7 +35,8 @@ std::shared_ptr<VersionFetch> App::versionsFor(P::Software sw) {
     if (it != wFetch_.end() && !(it->second->done && !it->second->ok)) return it->second;
     auto vf = std::make_shared<VersionFetch>();
     wFetch_[(int)sw] = vf;
-    std::thread([vf, sw] {
+    // Tracked, not detached: it reaches the provider caches, which must not outlive the process.
+    spawnBackground([vf, sw] {
         std::vector<P::Version> list;
         std::string err;
         bool ok = P::listVersions(sw, list, err);
@@ -44,7 +45,7 @@ std::shared_ptr<VersionFetch> App::versionsFor(P::Software sw) {
         vf->err = err;
         vf->list = std::move(list);
         vf->done = true;
-    }).detach();
+    });
     return vf;
 }
 
@@ -83,7 +84,7 @@ void App::pollJob() {
     if (!job_ || !job_->finished() || jobHandled_) return;
     jobHandled_ = true;
     if (job_->failed()) return;
-    auto s = std::make_unique<ServerInstance>(job_->result);
+    auto s = std::make_shared<ServerInstance>(job_->result);
     createdId_ = s->cfg.id;
     lastState_[s->cfg.id] = s->state;
     servers_.push_back(std::move(s));
@@ -289,15 +290,22 @@ void App::wizardConfigStep() {
         ImGui::PopStyleColor();
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
         ImDrawList* ldl = ImGui::GetWindowDrawList();
-        std::string needle = util::lower(wFilter_);
+        const ImVec2 clipMin = ldl->GetClipRectMin(), clipMax = ldl->GetClipRectMax();
+        const std::string needle = util::lower(util::trim(wFilter_));
         bool latestMarked = false;
         int shown = 0;
         for (auto& v : list) {
             if (!v.stable && !wShowUnstable_) continue;
-            if (!needle.empty() && util::lower(v.id).find(needle) == std::string::npos) continue;
+            if (!needle.empty() && !util::icontains(v.id, needle)) continue;
             ++shown;
             ImVec2 p = ImGui::GetCursorScreenPos();
             float w = ImGui::GetContentRegionAvail().x, h = HS(42);
+            // Paper and Forge list well over a hundred releases; only the visible ones need
+            // their chips measured and drawn.
+            if (p.y + h < clipMin.y || p.y > clipMax.y) {
+                ImGui::Dummy(ImVec2(w, h + S(2)));
+                continue;
+            }
             ImGui::PushID(v.id.c_str());
             bool clicked = ImGui::InvisibleButton("##v", ImVec2(w, h));
             bool hov = ImGui::IsItemHovered();
@@ -539,21 +547,21 @@ void App::scanImportFolder(const std::string& dirUtf8) {
     for (const char* group : {"libraries/net/neoforged/neoforge", "libraries/net/minecraftforge/forge"}) {
         fs::path g = dir / group;
         if (!fs::is_directory(g, ec)) continue;
-        for (auto& v : fs::directory_iterator(g, ec))
-            if (fs::exists(v.path() / "win_args.txt", ec)) {
-                std::string rel = std::string(group) + "/" + util::pathStr(v.path().filename()) + "/win_args.txt";
-                iTargets_.push_back({std::string(util::contains(group, "neoforged") ? "NeoForge" : "Forge") + " launcher (" +
-                                         util::pathStr(v.path().filename()) + ")",
-                                     "args", rel});
-            }
+        util::forEachDirEntry(g, [&](const fs::directory_entry& v, std::error_code&) {
+            if (!fs::exists(v.path() / "win_args.txt", ec)) return;
+            std::string rel = std::string(group) + "/" + util::pathStr(v.path().filename()) + "/win_args.txt";
+            iTargets_.push_back({std::string(util::contains(group, "neoforged") ? "NeoForge" : "Forge") + " launcher (" +
+                                     util::pathStr(v.path().filename()) + ")",
+                                 "args", rel});
+        });
     }
     std::vector<std::string> jars;
-    for (auto& e : fs::directory_iterator(dir, ec)) {
-        if (!e.is_regular_file(ec) || e.path().extension() != ".jar") continue;
-        std::string n = util::pathStr(e.path().filename());
-        if (util::contains(util::lower(n), "installer")) continue;
+    util::forEachDirEntry(dir, [&](const fs::directory_entry& e, std::error_code& dec) {
+        if (!e.is_regular_file(dec) || e.path().extension() != ".jar") return;
+        const std::string n = util::pathStr(e.path().filename());
+        if (util::contains(util::lower(n), "installer")) return;
         jars.push_back(n);
-    }
+    });
     auto score = [](const std::string& n) {
         std::string l = util::lower(n);
         int s = 0;
@@ -655,7 +663,7 @@ void App::drawImport() {
             c.minRamMB = std::min(iRam_, 1024);
             c.javaMajor = c.mcVersion.empty() ? 0 : P::heuristicJava(c.mcVersion);
             c.createdAt = util::nowUnix();
-            servers_.push_back(std::make_unique<ServerInstance>(c));
+            servers_.push_back(std::make_shared<ServerInstance>(c));
             lastState_[c.id] = State::Stopped;
             saveAll();
             buildCommands();

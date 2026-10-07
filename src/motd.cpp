@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 #include "ui.h"
 
@@ -67,10 +68,18 @@ std::vector<Run> parse(const std::string& raw) {
     return runs;
 }
 
+// Only the codes Minecraft understands. Converting any letter turned ordinary text such as
+// "Tom & Jerry" into a section sign followed by a stray character.
+static bool isColorCode(char c) {
+    const char l = (char)tolower((unsigned char)c);
+    return (l >= '0' && l <= '9') || (l >= 'a' && l <= 'f') || l == 'k' || l == 'l' || l == 'm' || l == 'n' || l == 'o' || l == 'r';
+}
+
 std::string toSectionCodes(const std::string& in) {
     std::string out;
+    out.reserve(in.size());
     for (size_t i = 0; i < in.size(); ++i) {
-        if (in[i] == '&' && i + 1 < in.size() && (isalnum((unsigned char)in[i + 1]) || in[i + 1] == 'r')) {
+        if (in[i] == '&' && i + 1 < in.size() && isColorCode(in[i + 1])) {
             out += "\xC2\xA7";
             out += (char)tolower((unsigned char)in[i + 1]);
             ++i;
@@ -83,8 +92,9 @@ std::string toSectionCodes(const std::string& in) {
 
 std::string fromSectionCodes(const std::string& in) {
     std::string out;
+    out.reserve(in.size());
     for (size_t i = 0; i < in.size(); ++i) {
-        if ((unsigned char)in[i] == 0xC2 && i + 2 < in.size() && (unsigned char)in[i + 1] == 0xA7) {
+        if ((unsigned char)in[i] == 0xC2 && i + 2 < in.size() && (unsigned char)in[i + 1] == 0xA7 && isColorCode(in[i + 2])) {
             out += '&';
             out += in[i + 2];
             i += 2;
@@ -110,15 +120,36 @@ void drawListEntry(ImDrawList* dl, ImVec2 p, float width, float height, unsigned
     float y = p.y + D(14) + tile + S(9);
     float x = p.x + D(18);
     float maxX = q.x - D(18);
+    const float lineH = TextSize(fRegular, 14.f, "A").y;
+    const float glyphSize = FS(14.f);
     for (auto& r : runs) {
-        if (x > maxX) break;
+        if (x >= maxX) break;
         ImFont* font = r.bold ? fBold : fRegular;
-        std::string txt = r.text;
-        while (!txt.empty() && x + TextSize(font, 14.f, txt.c_str()).x > maxX) txt.resize(txt.size() - 1);
-        if (txt.empty()) continue;
-        ImVec2 ts = TextSize(font, 14.f, txt.c_str());
-        DrawStr(dl, font, 14.f, ImVec2(x, y), r.color, txt.c_str());
-        if (r.underline) dl->AddLine(ImVec2(x, y + ts.y), ImVec2(x + ts.x, y + ts.y), Fade(r.color), 1.f);
+        const char* s = r.text.c_str();
+        const char* end = s + r.text.size();
+        ImVec2 ts = TextSize(font, 14.f, s);
+        if (x + ts.x <= maxX) {
+            DrawStr(dl, font, 14.f, ImVec2(x, y), r.color, s);
+        } else {
+            // Walk whole code points until the run stops fitting. Measuring the remaining text
+            // again for every trimmed character was quadratic, and trimming one byte at a time
+            // could split a multi-byte character.
+            const float budget = maxX - x;
+            const char* p = s;
+            float acc = 0;
+            while (p < end) {
+                const char* next = p + 1;
+                while (next < end && ((unsigned char)*next & 0xC0) == 0x80) ++next;
+                const float w = font->CalcTextSizeA(glyphSize, FLT_MAX, 0.f, p, next).x;
+                if (acc + w > budget) break;
+                acc += w;
+                p = next;
+            }
+            if (p == s) break;   // none of this run fits on the remaining line
+            ts = ImVec2(acc, ts.y);
+            dl->AddText(font, glyphSize, ImVec2(x, std::floor(y)), Fade(r.color), s, p);
+        }
+        if (r.underline) dl->AddLine(ImVec2(x, y + lineH), ImVec2(x + ts.x, y + lineH), Fade(r.color), 1.f);
         x += ts.x;
     }
 }

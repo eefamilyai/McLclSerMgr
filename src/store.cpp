@@ -1,8 +1,25 @@
 #include "store.h"
 
+#include <algorithm>
+
 #include "nlohmann/json.hpp"
 
 using nlohmann::json;
+
+namespace {
+// Every field is fetched defensively: a single key of the wrong type used to throw out of the
+// whole load(), silently discarding all the settings that followed it.
+template <class T>
+T jvalue(const json& j, const char* key, T def) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return def;
+    try {
+        return it->get<T>();
+    } catch (...) {
+        return def;
+    }
+}
+}  // namespace
 
 // The accent list was reordered when the palette grew; map the old indices across.
 static int migrateAccent(int old) {
@@ -16,55 +33,87 @@ void Settings::load() {
     if (!util::readFile(util::appDataDir() / "settings.json", txt)) return;
     try {
         json j = json::parse(txt);
+        if (!j.is_object()) return;
         const bool legacy = !j.contains("settingsVersion");
-        serversRoot = j.value("serversRoot", serversRoot);
-        defaultRamMB = j.value("defaultRamMB", defaultRamMB);
-        accent = legacy ? migrateAccent(j.value("accent", 0)) : j.value("accent", accent);
-        stopOnExit = j.value("stopOnExit", stopOnExit);
+        serversRoot = jvalue(j, "serversRoot", serversRoot);
+        defaultRamMB = jvalue(j, "defaultRamMB", defaultRamMB);
+        accent = legacy ? migrateAccent(jvalue(j, "accent", 0)) : jvalue(j, "accent", accent);
+        stopOnExit = jvalue(j, "stopOnExit", stopOnExit);
 
-        theme = j.value("theme", theme);
-        customAccent = j.value("customAccent", customAccent);
-        customAccentRgb = j.value("customAccentRgb", customAccentRgb) & 0xFFFFFFu;
-        density = j.value("density", density);
-        radius = j.value("radius", radius);
-        textScale = j.value("textScale", textScale);
-        monoScale = j.value("monoScale", monoScale);
-        animSpeed = j.value("animSpeed", animSpeed);
-        shadows = j.value("shadows", shadows);
-        backdropGlow = j.value("backdropGlow", backdropGlow);
-        bgStyle = j.value("bgStyle", bgStyle);
-        bgStrength = j.value("bgStrength", bgStrength);
-        fontFamily = j.value("fontFamily", fontFamily);
-        monoFamily = j.value("monoFamily", monoFamily);
+        theme = jvalue(j, "theme", theme);
+        customAccent = jvalue(j, "customAccent", customAccent);
+        customAccentRgb = jvalue(j, "customAccentRgb", customAccentRgb) & 0xFFFFFFu;
+        density = jvalue(j, "density", density);
+        radius = jvalue(j, "radius", radius);
+        textScale = jvalue(j, "textScale", textScale);
+        monoScale = jvalue(j, "monoScale", monoScale);
+        animSpeed = jvalue(j, "animSpeed", animSpeed);
+        shadows = jvalue(j, "shadows", shadows);
+        backdropGlow = jvalue(j, "backdropGlow", backdropGlow);
+        bgStyle = jvalue(j, "bgStyle", bgStyle);
+        bgStrength = jvalue(j, "bgStrength", bgStrength);
+        fontFamily = jvalue(j, "fontFamily", fontFamily);
+        monoFamily = jvalue(j, "monoFamily", monoFamily);
 
-        sidebarCollapsed = j.value("sidebarCollapsed", sidebarCollapsed);
-        sidebarWidth = j.value("sidebarWidth", sidebarWidth);
-        showSidebarStatus = j.value("showSidebarStatus", showSidebarStatus);
-        toastCorner = j.value("toastCorner", toastCorner);
-        toastSeconds = j.value("toastSeconds", toastSeconds);
-        confirmDestructive = j.value("confirmDestructive", confirmDestructive);
-        showClock = j.value("showClock", showClock);
-        clock24h = j.value("clock24h", clock24h);
-        restoreWindow = j.value("restoreWindow", restoreWindow);
-        windowW = j.value("windowW", windowW);
-        windowH = j.value("windowH", windowH);
-        startPage = j.value("startPage", startPage);
+        sidebarCollapsed = jvalue(j, "sidebarCollapsed", sidebarCollapsed);
+        sidebarWidth = jvalue(j, "sidebarWidth", sidebarWidth);
+        showSidebarStatus = jvalue(j, "showSidebarStatus", showSidebarStatus);
+        toastCorner = jvalue(j, "toastCorner", toastCorner);
+        toastSeconds = jvalue(j, "toastSeconds", toastSeconds);
+        confirmDestructive = jvalue(j, "confirmDestructive", confirmDestructive);
+        showClock = jvalue(j, "showClock", showClock);
+        clock24h = jvalue(j, "clock24h", clock24h);
+        restoreWindow = jvalue(j, "restoreWindow", restoreWindow);
+        windowW = jvalue(j, "windowW", windowW);
+        windowH = jvalue(j, "windowH", windowH);
+        startPage = jvalue(j, "startPage", startPage);
 
-        serverView = j.value("serverView", serverView);
-        cardSize = j.value("cardSize", cardSize);
-        sortMode = j.value("sortMode", sortMode);
-        showStatTiles = j.value("showStatTiles", showStatTiles);
-        showCardActions = j.value("showCardActions", showCardActions);
+        serverView = jvalue(j, "serverView", serverView);
+        cardSize = jvalue(j, "cardSize", cardSize);
+        sortMode = jvalue(j, "sortMode", sortMode);
+        showStatTiles = jvalue(j, "showStatTiles", showStatTiles);
+        showCardActions = jvalue(j, "showCardActions", showCardActions);
 
-        logMaxLines = j.value("logMaxLines", logMaxLines);
-        logTimestamps = j.value("logTimestamps", logTimestamps);
-        logWrap = j.value("logWrap", logWrap);
-        consoleAutoScroll = j.value("consoleAutoScroll", consoleAutoScroll);
-        editorTabSize = j.value("editorTabSize", editorTabSize);
-        editorWrap = j.value("editorWrap", editorWrap);
+        logMaxLines = jvalue(j, "logMaxLines", logMaxLines);
+        logTimestamps = jvalue(j, "logTimestamps", logTimestamps);
+        logWrap = jvalue(j, "logWrap", logWrap);
+        consoleAutoScroll = jvalue(j, "consoleAutoScroll", consoleAutoScroll);
+        editorTabSize = jvalue(j, "editorTabSize", editorTabSize);
+        editorWrap = jvalue(j, "editorWrap", editorWrap);
 
-        autoInstallJava = j.value("autoInstallJava", autoInstallJava);
+        autoInstallJava = jvalue(j, "autoInstallJava", autoInstallJava);
     } catch (...) {}
+    normalize();
+}
+
+// settings.json is user-editable (and theme files are imported from anywhere), so nothing that
+// reaches the layout maths or an allocation may be trusted: a tiny radius or a huge line count
+// would otherwise divide by zero or reserve gigabytes.
+void Settings::normalize() {
+    theme = std::clamp(theme, 0, theme::PaletteCount() - 1);
+    accent = std::clamp(accent, 0, theme::AccentCount() - 1);
+    customAccentRgb &= 0xFFFFFFu;
+    density = std::clamp(density, 0, 2);
+    radius = std::clamp(radius, 0.f, 1.8f);
+    textScale = std::clamp(textScale, 0.85f, 1.4f);
+    monoScale = std::clamp(monoScale, 0.85f, 1.5f);
+    animSpeed = std::clamp(animSpeed, 0.f, 1.6f);
+    bgStyle = std::clamp(bgStyle, 0, 4);
+    bgStrength = std::clamp(bgStrength, 0.f, 1.5f);
+    fontFamily = std::clamp(fontFamily, 0, theme::FontFamilyCount() - 1);
+    monoFamily = std::clamp(monoFamily, 0, theme::MonoFamilyCount() - 1);
+    sidebarWidth = std::clamp(sidebarWidth, 210, 340);
+    toastCorner = std::clamp(toastCorner, 0, 3);
+    toastSeconds = std::clamp(toastSeconds, 1.5f, 12.f);
+    windowW = std::clamp(windowW, 900, 8000);
+    windowH = std::clamp(windowH, 600, 8000);
+    serverView = std::clamp(serverView, 0, 1);
+    cardSize = std::clamp(cardSize, 0, 2);
+    sortMode = std::clamp(sortMode, 0, 3);
+    logMaxLines = std::clamp(logMaxLines, 500, 20000);
+    editorTabSize = editorTabSize == 4 ? 4 : 2;
+    if (defaultRamMB < 512) defaultRamMB = 512;
+    if (startPage != "servers" && startPage != "wizard" && startPage != "import") startPage = "servers";
 }
 
 void Settings::save() const {
@@ -157,8 +206,11 @@ static json toJson(const ServerConfig& c) {
 
 static ServerConfig fromJson(const json& j) {
     ServerConfig c;
-    c.id = j.value("id", util::newId());
-    c.name = j.value("name", "Server");
+    // Fetching the default eagerly called newId() for every server on every load, and a
+    // mistyped id key would have thrown out of the whole parse.
+    c.id = jvalue(j, "id", std::string());
+    if (c.id.empty()) c.id = util::newId();
+    c.name = jvalue(j, "name", std::string("Server"));
     c.software = j.value("software", "vanilla");
     c.mcVersion = j.value("mcVersion", "");
     c.build = j.value("build", "");
@@ -177,19 +229,28 @@ static ServerConfig fromJson(const json& j) {
     c.lastStarted = j.value("lastStarted", (int64_t)0);
     c.color = j.value("color", "");
     c.pinned = j.value("pinned", false);
-    c.note = j.value("note", "");
+    c.note = jvalue(j, "note", std::string());
+    if (c.color.size() != 6) c.color.clear();
+    // Only reject nonsense: a hand-edited entry must not ask for a negative heap, but the
+    // ceiling has to stay far above anything a real machine would use for one server.
+    c.maxRamMB = std::clamp(c.maxRamMB, 512, 1 << 20);
+    c.minRamMB = std::clamp(c.minRamMB, 256, c.maxRamMB);
+    c.javaMajor = std::clamp(c.javaMajor, 0, 64);
+    if (c.launchMode != "jar" && c.launchMode != "args") c.launchMode = "jar";
     return c;
 }
 
-void loadServers(std::vector<std::unique_ptr<ServerInstance>>& out) {
+void loadServers(std::vector<std::shared_ptr<ServerInstance>>& out) {
     std::string txt;
     if (!util::readFile(util::appDataDir() / "servers.json", txt)) return;
     try {
-        for (auto& j : json::parse(txt)) out.push_back(std::make_unique<ServerInstance>(fromJson(j)));
+        json j = json::parse(txt);
+        if (!j.is_array()) return;
+        for (auto& e : j) out.push_back(std::make_shared<ServerInstance>(fromJson(e)));
     } catch (...) {}
 }
 
-void saveServers(const std::vector<std::unique_ptr<ServerInstance>>& servers) {
+void saveServers(const std::vector<std::shared_ptr<ServerInstance>>& servers) {
     json arr = json::array();
     for (auto& s : servers) arr.push_back(toJson(s->cfg));
     util::writeFile(util::appDataDir() / "servers.json", arr.dump(2));
